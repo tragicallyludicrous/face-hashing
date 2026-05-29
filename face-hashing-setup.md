@@ -1,524 +1,289 @@
 # Face Hashing — Project Setup Guide (Stage 1)
 
-**Goal of this milestone:** Upload a photo, run DECA on Google Colab, get back FLAME parameters (your "JSON object" of facial features) and a 3D mesh, view that mesh by drag-rotating in your browser.
+**Goal of this milestone:** photo → DECA → FLAME parameters (your "JSON object" of facial features) → 3D mesh → drag-rotate it in the browser. Then tweak the parameters and watch the face change (the "Skyrim slider" moment). **No hash transform yet** — Stage 1 just proves we can get from a photo to a structured 3D representation we can play with.
 
-**No transform yet.** That's intentional. Stage 1 answers one question: *can we reliably get from a photo to a structured 3D representation we can play with?*
+> **This guide was rewritten 2026-05-29** around the *in-kernel, no-renderer* approach. The earlier version told you to install PyTorch3D and JIT-compile DECA's CUDA rasterizer; that path is abandoned (see "Why in-kernel" below). If you find any PyTorch3D / `--rasterizer_type` / `--saveVis` instructions in your notebook, they're from the old flow.
+
+This doc is the **procedural source of truth** for building/modifying the Colab notebook. `CONTEXT.md` is the higher-level "where am I right now" doc; `face_hashing_research_report.md` is the deep tool reference for later stages.
 
 ---
 
 ## How this guide is organized
 
-1. **The mental model** — what the pieces are and why
-2. **Repo layout** — where everything lives
-3. **Step-by-step setup** — Colab notebook + local viewer
-4. **Known footguns** — the things that will trip you up
-5. **What to do when it works** — sanity checks and next moves
-
-If you've never used Colab before, skim section 1 first. If something breaks, jump to section 4 — your problem is probably listed there.
+1. The mental model — what the pieces are and why
+2. **Why in-kernel + no renderer** — the key decision this rewrite is built on
+3. The notebook, cell by cell
+4. The viewer (on the Mac)
+5. Known footguns
+6. What to do when it works (incl. the Skyrim-slider demo)
+7. Keeping the notebook, these docs, and Claude in sync
 
 ---
 
 ## 1. The mental model
 
-You're building a two-machine system:
+Two-machine system:
 
-**Machine A: Google Colab (the GPU)**
-Runs the heavy ML stuff. You upload a photo here, DECA chews on it, and out come two things:
-- A FLAME parameter dict — Python dict of tensors, the "facial features as JSON" representation
-- A 3D mesh — a `.obj` file you'll convert to `.glb`
+- **Machine A — Google Colab (the GPU).** Runs DECA. You point it at photos in Google Drive; it returns FLAME parameters + a 3D mesh (`.glb`) back to Drive.
+- **Machine B — the Mac (the viewer).** A single static HTML page (`viewer/index.html`) using Google's `<model-viewer>` to drag-rotate the `.glb`. No build step.
 
-**Machine B: Your Mac (the viewer)**
-Runs a tiny static HTML page that loads the `.glb` and lets you drag-rotate it. No build step, no framework — just one HTML file.
+**Handoff is via the Google Drive alias** (`Drive Folder` → `My Drive/Face-Hashing`, holding `Input/`, `Output/`, the FLAME model, and a `cache/` for big downloads). The Mac drops photos in `Input/`; Colab mounts Drive, reads them, writes `.glb` + params to `Output/`; the synced folder brings them back to the Mac. Drive also doubles as the **cross-restart cache** (§3) so free-tier resets don't re-download large files.
 
-You download the artifacts from Colab to your Mac after each run. Later, when you wire up the full pipeline, the "two machines" will become a backend (Colab/RunPod/local) and a frontend (your web app), but for now keep them mentally separate.
+### Glossary
 
-### Glossary you'll bump into
+- **FLAME** — a parametric 3D face model. Feed it ~100 **shape** coefficients (identity) + ~50 **expression** coefficients + 6 **pose** values (jaw + global rotation) and it outputs a fixed-topology **5023-vertex mesh**. The "rig" every face is a setting of.
+- **DECA** — a network that regresses FLAME parameters from a single photo. Two halves matter to us:
+  - **`encode(image)`** → the parameter dict (`shape`, `exp`, `pose`, `tex`, `cam`, `light`, `detail`). This is a plain ResNet. **No renderer.**
+  - **the FLAME decoder** (`deca.flame(shape, exp, pose)`) → mesh **vertices**. **No renderer.**
+- **DECA's rasterizer / renderer** — a *separate* component that draws flat 2D preview images of the mesh (shaded, lit). It's the thing that needs a custom CUDA build. **We don't use it** — see §2.
+- **`.glb`** — binary glTF, the format `<model-viewer>` wants. We build it from FLAME vertices + faces with `trimesh`.
+- **`<model-viewer>`** — Google web component; one HTML tag gives a drag-rotatable 3D viewer.
 
-- **FLAME** — A parametric 3D face model. Given a vector of ~300 shape coefficients + ~100 expression coefficients + 6 pose values, it spits out a 5023-vertex 3D mesh of a face. Created by the Max Planck Institute. Think of it as the underlying "rig" that every individual face is a setting of.
-- **DECA** — A neural network that takes a 2D photo and predicts the FLAME parameters for the face in that photo. This is the regressor — the "photo → JSON" step.
-- **`.obj`** — Plain-text 3D mesh format. Easy to read, terrible for the browser.
-- **`.glb`** — Binary glTF. The format `<model-viewer>` wants. We convert `.obj` → `.glb` so the browser is happy.
-- **`<model-viewer>`** — A Google-maintained web component. Drop one HTML tag, get a drag-rotatable 3D viewer with proper lighting. No three.js code required.
-
----
-
-## 2. Repo layout
-
-Create this folder structure on your Mac. Empty for now; we'll fill it as we go.
-
-```
-face-hashing/
-├── README.md
-├── colab/
-│   └── stage1_deca.ipynb          # The notebook (we'll build it in Colab and save here)
-├── outputs/                        # Where downloaded results go
-│   └── .gitkeep
-├── viewer/
-│   ├── index.html                  # The <model-viewer> page
-│   └── models/                     # .glb files go here
-└── .gitignore
-```
-
-**`.gitignore`** — start with this:
-
-```
-outputs/*
-!outputs/.gitkeep
-viewer/models/*.glb
-.DS_Store
-__pycache__/
-*.pyc
-.venv/
-```
-
-You will eventually be tempted to check in face data and model weights. Don't. The weights are large and have license restrictions; the photos are personal data. Keep them local.
-
-**Initialize the repo:**
-
-```bash
-mkdir -p face-hashing/{colab,outputs,viewer/models}
-cd face-hashing
-touch outputs/.gitkeep
-git init
-```
+The crucial distinction: **the interactive 3D face you drag in the browser is the mesh (vertices + faces), not a render.** DECA's rasterizer only makes throwaway 2D preview PNGs. So dropping it costs us nothing for Stage 1 *or* the slider demo.
 
 ---
 
-## 3. Step-by-step setup
+## 2. Why in-kernel + no renderer (read this once)
 
-### 3.1 — Register for FLAME (do this first, takes ~5 minutes)
+DECA is a 2021 repo targeting Python 3.7–3.10. On current Colab (Python 3.12, Torch 2.x, CUDA 12) the old "install PyTorch3D and compile the rasterizer" path is a tarpit: no matching prebuilt PyTorch3D wheel for the default runtime, and DECA's hand-rolled CUDA rasterizer hardcodes `gcc-7` (absent on Colab). We burned hours there.
 
-DECA depends on the FLAME model files, which require a free registration.
+The escape: **we never needed the rasterizer.** Our Stage-1 deliverables are the parameter dict (`.npz`/`.mat`) and the mesh (`.glb`), both produced by `encode()` + the FLAME decoder, neither of which touches the rasterizer. The CUDA build only fires from one call (`set_rasterizer('standard')`) inside `DECA.__init__`. We neuter that call and call the FLAME decoder directly.
 
-1. Go to https://flame.is.tue.mpg.de/register.php
-2. Register with your email (real name and institution are fine; "Personal" is an acceptable institution).
-3. Wait for the confirmation email. Click the link.
-4. Log in at https://flame.is.tue.mpg.de/login.php
-5. Don't download anything yet — you'll grab the files from inside Colab using your credentials.
+Running **in-kernel** (in the notebook process, not via `!python …`) buys two more things:
 
-**Licensing note:** FLAME 2020 is under a Creative Commons Attribution license (commercial use allowed with attribution, no fake/defamatory content, no pornography). The newer FLAME 2023 Open is CC-BY-4.0. DECA uses FLAME 2020 by default; that's fine for your project.
+1. **The chumpy fix becomes a simple in-kernel monkeypatch** — no on-disk shim needed, because there's no fresh `!python` subprocess to lose the patch. (A subprocess starts a clean interpreter that wouldn't see in-memory patches; that was the whole reason the old flow needed on-disk `sed`s.)
+2. **It's exactly the setup Stage 2 needs** — to hash and re-render you'll want the FLAME decoder live in the kernel anyway. The slider demo (§6) is then a few lines.
 
-### 3.2 — Open Google Colab
-
-1. Go to https://colab.research.google.com
-2. Sign in with a Google account
-3. **File → New notebook**
-4. **Runtime → Change runtime type → T4 GPU → Save**
-
-You now have a free Linux box with an NVIDIA T4 GPU for up to ~12 hours. If you let it idle for 90 minutes it'll disconnect and you'll lose installed packages (but not files saved to Google Drive). For Stage 1 this is fine.
-
-**Verify the GPU is attached.** In a cell:
-
-```python
-!nvidia-smi
-```
-
-You should see a table mentioning "Tesla T4." If you see "command not found," the runtime type didn't take — recheck step 4 above.
-
-### 3.3 — Install DECA in Colab
-
-The DECA repo (https://github.com/yfeng95/DECA) hasn't been updated since 2021 and its `requirements.txt` pins old versions. We're going to install it but override the troublesome pins. Walk through these cells one at a time.
-
-**Cell 1 — clone the repo:**
-
-```python
-!git clone https://github.com/yfeng95/DECA.git
-%cd DECA
-```
-
-**Cell 2 — install Python dependencies.** DECA's own `install_conda.sh` is meant for a conda environment; on Colab we install with pip and skip the parts that conflict with Colab's preinstalled libraries:
-
-```python
-# Colab already has a recent PyTorch + CUDA, leave those alone.
-!pip install -q chumpy
-!pip install -q yacs==0.1.8
-!pip install -q face-alignment
-!pip install -q ninja
-!pip install -q kornia==0.6.12
-!pip install -q scikit-image
-!pip install -q opencv-python
-!pip install -q PyYAML
-```
-
-**Cell 3 — chumpy needs a Python 3.10+ patch.** This is the single most common DECA install failure. chumpy uses `numpy.bool` which was removed; patch it:
-
-```python
-import chumpy.ch
-import numpy as np
-# Monkey-patch deprecated numpy aliases that chumpy still uses
-for alias, real in [('bool', bool), ('int', int), ('float', float), ('complex', complex), ('object', object), ('str', str)]:
-    if not hasattr(np, alias):
-        setattr(np, alias, real)
-```
-
-(If you're on Python <3.10 in Colab, this cell is a no-op. Run it anyway.)
-
-**Cell 4 — install pytorch3d (the renderer).** DECA's *default* rasterizer uses PyTorch JIT compilation, which sometimes fails on Colab. The safer path is to install PyTorch3D and pass `--rasterizer_type=pytorch3d` later. Use the prebuilt wheel matching Colab's PyTorch:
-
-```python
-import torch
-print(torch.__version__, torch.version.cuda)
-
-# Install prebuilt pytorch3d (this avoids a 20-minute source build)
-!pip install -q fvcore iopath
-!pip install -q --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt210/download.html
-```
-
-If the prebuilt wheel URL fails because Colab's PyTorch/CUDA combo changed, fall back to:
-
-```python
-!pip install -q "git+https://github.com/facebookresearch/pytorch3d.git@stable"
-```
-
-This builds from source and takes ~10–20 minutes but works on any combo. Have coffee.
-
-### 3.4 — Download the model weights
-
-DECA needs three files. Two are from FLAME (the registration you did in step 3.1), one is DECA's own weights.
-
-**Cell 5 — set up directories:**
-
-```python
-import os
-os.makedirs('data', exist_ok=True)
-```
-
-**Cell 6 — get DECA's pretrained weights.** These live on Google Drive. The DECA repo's README links to a specific file `deca_model.tar`:
-
-```python
-!pip install -q gdown
-# DECA pretrained model (~430MB)
-!gdown 1rp8kdyLPvErw2dTmqtjISRVvQLj6Yzje -O data/deca_model.tar
-```
-
-If `gdown` fails (Google sometimes throttles), you can manually:
-1. Go to the DECA README on GitHub
-2. Click the "trained model" link, download `deca_model.tar`
-3. Upload it to Colab via the file browser (left sidebar → folder icon → upload to `DECA/data/`)
-
-**Cell 7 — get FLAME 2020.** This is the file that requires registration. The cleanest way in Colab is to upload it manually:
-
-1. On your laptop, log in at https://flame.is.tue.mpg.de
-2. Go to **Downloads → FLAME 2020 → "Model and Code"** and download `FLAME2020.zip`
-3. In Colab, click the folder icon in the left sidebar, then navigate into `DECA/data/`, right-click → **Upload**, choose the zip
-4. Then in a cell:
-
-```python
-!cd data && unzip -o FLAME2020.zip
-!ls data
-```
-
-You should see `generic_model.pkl` among the contents. That's the FLAME 2020 model file DECA needs.
-
-**Cell 8 — get the FLAME albedo and other auxiliary files.** DECA's README lists these under "Prepare data":
-
-```python
-# FLAME albedo model (also from MPI) — optional, only needed for textured output
-# Skip for now; we're going with untextured mesh first.
-
-# DECA's own auxiliary files (already in the repo at DECA/data/)
-!ls data
-```
-
-You should see `deca_model.tar`, `generic_model.pkl`, and the DECA repo's bundled files (`fixed_displacement_256.npy`, `landmark_embedding.npy`, `mean_texture.jpg`, `texture_data_256.npy`, `uv_face_eye_mask.png`, `uv_face_mask.png`). If `generic_model.pkl` is missing, re-do Cell 7.
-
-### 3.5 — Run DECA on a test image
-
-**Cell 9 — upload a photo.** Use one of DECA's bundled examples first to confirm the pipeline works, then swap in your own:
-
-```python
-# Use a bundled example
-!ls TestSamples/examples
-```
-
-Pick one, e.g., `alfw2000.jpg`. To use your own photo, upload it via the sidebar file browser into a folder like `DECA/my_inputs/`.
-
-**Cell 10 — run reconstruction:**
-
-```python
-!python demos/demo_reconstruct.py \
-    -i TestSamples/examples \
-    -s outputs/examples \
-    --saveObj True \
-    --saveMat True \
-    --saveVis True \
-    --rasterizer_type=pytorch3d
-```
-
-Flags explained:
-- `-i` input folder (DECA processes every image in it)
-- `-s` save folder
-- `--saveObj True` exports the 3D mesh
-- `--saveMat True` exports a `.mat` file with the FLAME parameters — **this is your "JSON"**
-- `--saveVis True` exports a visualization image (input, landmarks, reconstructed face overlay)
-- `--rasterizer_type=pytorch3d` uses the safer renderer
-
-If it finishes without errors you'll have `outputs/examples/<imagename>/<imagename>.obj` and `<imagename>.mat`.
-
-### 3.6 — Inspect the FLAME parameters (the "JSON")
-
-The `.mat` file is MATLAB format. Load it into Python so you can see what's actually in there:
-
-**Cell 11:**
-
-```python
-from scipy.io import loadmat
-import numpy as np
-
-mat = loadmat('outputs/examples/alfw2000/alfw2000.mat')
-# Drop MATLAB's internal keys
-params = {k: v for k, v in mat.items() if not k.startswith('__')}
-
-for key, val in params.items():
-    print(f"{key:20s} shape={val.shape} dtype={val.dtype}")
-```
-
-You should see entries like:
-
-```
-shape                shape=(1, 100)   dtype=float32   ← identity (100 coefficients)
-exp                  shape=(1, 50)    dtype=float32   ← expression (50 coefficients)
-pose                 shape=(1, 6)     dtype=float32   ← jaw + global rotation
-cam                  shape=(1, 3)     dtype=float32   ← camera (scale + 2D offset)
-light                shape=(1, 9, 3)  dtype=float32   ← spherical-harmonics lighting
-tex                  shape=(1, 50)    dtype=float32   ← texture (50 coefficients)
-detail               shape=(1, 128)   dtype=float32   ← person-specific wrinkles
-```
-
-**This is the structured representation your Face Hashing project is built around.** Every single number is a knob. `shape[0][0]` through `shape[0][99]` control identity — those are the ones your eventual hash function will mutate. `exp` and `pose` you'll probably *preserve* so the hashed face inherits the original's smile and head angle.
-
-Save it as actual JSON for the warm fuzzies:
-
-**Cell 12:**
-
-```python
-import json
-
-params_json = {k: v.tolist() for k, v in params.items()}
-with open('outputs/examples/alfw2000/params.json', 'w') as f:
-    json.dump(params_json, f, indent=2)
-
-print("Saved params.json")
-# Peek at the first 5 shape coefficients
-print("First 5 identity coefficients:", params['shape'][0][:5])
-```
-
-### 3.7 — Convert the mesh to `.glb` for the browser viewer
-
-DECA outputs `.obj`. `<model-viewer>` needs `.glb`. The cleanest converter is `trimesh`:
-
-**Cell 13:**
-
-```python
-!pip install -q trimesh
-```
-
-**Cell 14:**
-
-```python
-import trimesh
-
-mesh = trimesh.load('outputs/examples/alfw2000/alfw2000.obj', force='mesh')
-# Strip texture references (we're going untextured for the Skyrim look)
-mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=[180, 180, 200, 255])
-mesh.export('outputs/examples/alfw2000/alfw2000.glb')
-print("Exported .glb")
-```
-
-The vertex color `[180, 180, 200, 255]` gives you a slightly cool gray — close to the Skyrim character-creator preview aesthetic. Adjust to taste.
-
-### 3.8 — Download the artifacts
-
-**Cell 15:**
-
-```python
-from google.colab import files
-files.download('outputs/examples/alfw2000/alfw2000.glb')
-files.download('outputs/examples/alfw2000/params.json')
-```
-
-Or zip the whole output folder:
-
-```python
-!cd outputs && zip -r alfw2000_bundle.zip examples/alfw2000
-files.download('outputs/alfw2000_bundle.zip')
-```
-
-Move the `.glb` into your `face-hashing/viewer/models/` folder on your Mac. Save `params.json` to `face-hashing/outputs/`.
-
-### 3.9 — The viewer (on your Mac)
-
-Create `face-hashing/viewer/index.html`:
-
-```html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Face Hashing — Stage 1 viewer</title>
-  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
-  <style>
-    body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #eee; }
-    main { max-width: 900px; margin: 2rem auto; padding: 1rem; }
-    model-viewer {
-      width: 100%;
-      height: 70vh;
-      background: linear-gradient(180deg, #222, #111);
-      --poster-color: transparent;
-    }
-    h1 { font-weight: 300; }
-    label { display: block; margin: 1rem 0 0.5rem; }
-    select { padding: 0.4rem; background: #222; color: #eee; border: 1px solid #444; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Face Hashing — Stage 1</h1>
-    <label for="model-select">Model:</label>
-    <select id="model-select">
-      <option value="models/alfw2000.glb">alfw2000 (example)</option>
-    </select>
-    <model-viewer
-      id="viewer"
-      src="models/alfw2000.glb"
-      camera-controls
-      auto-rotate
-      auto-rotate-delay="3000"
-      shadow-intensity="1"
-      exposure="1.1"
-      camera-orbit="0deg 75deg 0.5m"
-      field-of-view="30deg"
-      alt="Reconstructed 3D face"
-    ></model-viewer>
-  </main>
-  <script>
-    const sel = document.getElementById('model-select');
-    const viewer = document.getElementById('viewer');
-    sel.addEventListener('change', e => { viewer.src = e.target.value; });
-  </script>
-</body>
-</html>
-```
-
-**Run it.** Browsers won't load local files via `file://` for security reasons, so serve it:
-
-```bash
-cd face-hashing/viewer
-python3 -m http.server 8080
-```
-
-Open http://localhost:8080. You should see the face. Drag to rotate, scroll to zoom.
-
-**That's Stage 1 complete.** Photo → FLAME params (JSON) → 3D mesh → interactive viewer.
+What we give up: DECA's baked 2D preview images. Those are strictly worse than the live `<model-viewer>`.
 
 ---
 
-## 4. Known footguns
+## 3. The notebook, cell by cell
 
-These are the things that will eat your afternoon. Read them now, refer back when something breaks.
+**Built for fast restarts.** Free Colab resets often and wipes the runtime's disk each time, so the rule is: **cache anything big and slow in Drive; only re-do what's cheap.** The 434 MB DECA weights and the (registration-gated) FLAME model live in Drive permanently and are copied into the runtime on boot — a fast Google-internal copy, not an internet re-download. The DECA repo (~23 MB) and the pip packages are cheap, so we just re-fetch those. Every setup cell is **idempotent** (safe to re-run, does the minimum).
 
-### 4.1 — Colab disconnects and you lose everything
-Free-tier Colab kills idle sessions after ~90 minutes and total sessions after ~12 hours. When this happens, your installed packages are gone but your files might be too (the runtime's filesystem is ephemeral).
+> **Don't persist the installed packages (`site-packages`) to Drive.** Classic Colab footgun: native/compiled libs (opencv, kornia, face-alignment) load slowly and flakily over the Drive FUSE mount and break the moment Colab bumps Python. Re-`pip install` each session (~1–2 min); cache only the big *downloads*.
 
-**Fix:** Mount Google Drive and save outputs there:
+Drive layout this assumes, under `My Drive/Face-Hashing/`:
+```
+Input/                            # your photos
+Output/                           # results (.glb, _params.npz)
+FLAME/FLAME2020/generic_model.pkl # registration-gated; you placed it here once
+cache/deca_model.tar              # gdown'd once, reused every session
+```
+
+Order matters: mount Drive first (Cell 1); run the chumpy patch (Cell 4) before DECA is constructed (Cell 5).
+
+> ⚠️ **"verify in Colab":** a few DECA API details (the FLAME faces attribute, the `flame()` kwargs) vary by revision — fallbacks noted inline.
+
+### Cell 1 — mount Drive + define paths
 
 ```python
 from google.colab import drive
 drive.mount('/content/drive')
-# Then save to /content/drive/MyDrive/face-hashing/outputs/
+import os
+DRIVE = '/content/drive/MyDrive/Face-Hashing'
+CACHE = f'{DRIVE}/cache'; os.makedirs(CACHE, exist_ok=True)
+IN, OUT = f'{DRIVE}/Input', f'{DRIVE}/Output'
 ```
 
-For Stage 1 it's not worth bothering — re-running the whole notebook on a fresh session takes ~10 minutes. But once you start iterating, mount Drive.
-
-### 4.2 — `chumpy` import fails with `AttributeError: module 'numpy' has no attribute 'bool'`
-chumpy is unmaintained and uses numpy aliases that were removed in numpy 1.20+. The patch in Cell 3 handles it. If you see this error, you skipped or moved Cell 3 — run the patch *before* any DECA import.
-
-### 4.3 — `pytorch3d` install hangs or fails
-PyTorch3D wheels are pinned to specific PyTorch + CUDA versions. Colab updates its PyTorch periodically, breaking the wheel URL.
-
-**Diagnosis:**
-```python
-import torch
-print(torch.__version__, torch.version.cuda)
-```
-Match this against https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md to find the right wheel URL.
-
-**Last resort:** the `git+https://...@stable` install in Cell 4. It always works, just takes 10–20 minutes.
-
-### 4.4 — `RuntimeError: Error(s) in loading state_dict for DECA`
-Usually means `deca_model.tar` didn't download fully, or `generic_model.pkl` is missing.
+### Cell 2 — clone DECA, install deps, patch the detector (cheap; re-run each session)
 
 ```python
 import os
-print(os.path.getsize('data/deca_model.tar'))  # expect ~430 MB
-print(os.path.exists('data/generic_model.pkl'))  # expect True
+if not os.path.isdir('/content/DECA'):
+    !git clone https://github.com/yfeng95/DECA.git
+%cd /content/DECA
+# DECA's pins are ancient; install what Colab lacks, leave Torch/CUDA alone.
+!pip install -q chumpy yacs==0.1.8 face-alignment ninja kornia==0.6.12 scikit-image opencv-python PyYAML trimesh gdown
+# face-alignment renamed LandmarksType._2D -> TWO_D; DECA's detector still uses the old name.
+!sed -i 's/LandmarksType\._2D/LandmarksType.TWO_D/g' decalib/datasets/detectors.py
 ```
 
-### 4.5 — `<model-viewer>` shows nothing / blank canvas
-Three usual causes:
-1. **Wrong path** — `src="models/alfw2000.glb"` is relative to the HTML file. Make sure the `.glb` is actually in `viewer/models/`.
-2. **You opened the HTML via `file://`** — won't work, browsers block this. Use the `python3 -m http.server` trick.
-3. **The mesh is too small or too far away** — DECA meshes are in a small coordinate range. The `camera-orbit="0deg 75deg 0.5m"` attribute in the HTML handles this; if you're using your own viewer, set the camera distance to ~0.5 meters.
+> **Optional, to shave the pip minute:** cache the wheels in Drive once —
+> `!pip download -q -d "{CACHE}/wheels" chumpy yacs==0.1.8 face-alignment ninja kornia==0.6.12 scikit-image opencv-python PyYAML trimesh gdown` —
+> then install with `!pip install -q --no-index --find-links="{CACHE}/wheels" <same list>`. Wheels are Python-version-specific: if Colab bumps Python, delete `cache/wheels` and re-download; if `--no-index` errors on a missing dep, fall back to plain `pip install`.
 
-### 4.6 — Face is detected wrong or output looks weird
-DECA needs a clear, frontal-ish face. Profile shots, heavy occlusion (sunglasses, hands), extreme expressions, and very low resolution all hurt. Crop your input photo to roughly square around the face before uploading. The `--useTex True` flag also affects this slightly; leave it off for now.
-
-### 4.7 — "Why does the 3D face not really look like me?"
-This is **not a bug** — it's a fundamental limitation of single-image 3DMM regression. DECA captures identity-relevant geometry but the mesh is constrained to FLAME's learned face manifold, which biases toward average proportions. Noses come out generic, chins puffy. Recognizable but stylized. If this bothers you later, MICA (https://github.com/Zielon/MICA) gives metrically accurate identity reconstruction at the cost of expression fidelity. Don't switch yet — get the full pipeline working first.
-
-### 4.8 — The `.mat` file from DECA stores nested dicts oddly
-`scipy.io.loadmat` adds keys like `__header__`, `__version__`, `__globals__` — filter them out (Cell 11 already does this). If you load the file and see weird `mat_struct` objects, pass `squeeze_me=True, struct_as_record=False` to `loadmat`.
-
-### 4.9 — License / commercial use
-DECA's code is MIT but its pretrained models are non-commercial (per the DECA repo: research use only). FLAME 2020 is CC-BY (commercial OK with attribution and the listed restrictions). For your personal-project / exploratory phase, you're fine. If this ever turns into a product, you'd need either to retrain DECA-equivalent regressor on a permissive dataset, or get a license from MPI.
-
-### 4.10 — You'll want to compare two outputs and the viewer only loads one
-The `index.html` already has a `<select>` — duplicate the option line for each new `.glb` you drop into `viewer/models/`. Later we'll automate this with a small script that lists the directory; not worth it yet.
-
----
-
-## 5. What to do when it works
-
-### 5.1 — Sanity checks
-
-Run DECA on three different photos of the same person and compare the `shape` coefficients in their `params.json` files. They should be close but not identical (lighting and angle introduce noise). Run on photos of two different people; the `shape` vectors should be visibly different. This is your first hands-on intuition for what the "identity vector" actually encodes.
+### Cell 3 — weights, cached in Drive (gdown runs ONCE, ever)
 
 ```python
-import numpy as np, json
-a = json.load(open('outputs/personA_photo1/params.json'))
-b = json.load(open('outputs/personA_photo2/params.json'))
-c = json.load(open('outputs/personB_photo1/params.json'))
-
-sa, sb, sc = np.array(a['shape'])[0], np.array(b['shape'])[0], np.array(c['shape'])[0]
-print("Same person, different photos:", np.linalg.norm(sa - sb))
-print("Different people:", np.linalg.norm(sa - sc))
+import os
+os.makedirs('/content/DECA/data', exist_ok=True)
+deca_tar = f'{CACHE}/deca_model.tar'
+if not os.path.exists(deca_tar):                 # first session ever; skipped on every restart after
+    !gdown 1rp8kdyLPvErw2dTmqtjISRVvQLj6Yzje -O "{deca_tar}"
+# Drive -> local copy each session (fast, internal; loading from local disk is reliable). -n = don't re-copy.
+!cp -n "{deca_tar}" /content/DECA/data/deca_model.tar
+!cp -n "{DRIVE}/FLAME/FLAME2020/generic_model.pkl" /content/DECA/data/generic_model.pkl
+!ls -lh data/deca_model.tar data/generic_model.pkl
 ```
 
-The second number should be visibly larger than the first. If it's not, your photos are probably very different in lighting/pose; try frontal photos with neutral expression.
+> To skip even the local copy, set `deca_cfg.pretrained_modelpath = deca_tar` in Cell 5 and load straight from Drive. That moves fewer bytes, but `torch.load` then reads 434 MB over the FUSE mount, which can be slower/flakier than a local read — the copy is the safer default.
 
-### 5.2 — Manual parameter tweaking (your first taste of "the transform")
+### Cell 4 — chumpy patch (in-kernel; before DECA is constructed)
 
-This is the fun part. Don't write a transform yet; just *manually* change a few numbers and re-render.
+```python
+import inspect, numpy as np
+# chumpy is unmaintained: uses inspect.getargspec (removed in 3.11+) and numpy aliases (removed in numpy 2.x).
+if not hasattr(inspect, 'getargspec'):
+    inspect.getargspec = inspect.getfullargspec
+for _a, _r in [('bool', bool), ('int', int), ('float', float),
+               ('complex', complex), ('object', object), ('str', str), ('unicode', str)]:
+    if not hasattr(np, _a):
+        setattr(np, _a, _r)
+import chumpy  # must succeed here, before DECA loads the FLAME .pkl (which unpickles chumpy objects)
+print("chumpy", chumpy.__version__)
+```
 
-In Colab, after running DECA once, you can re-render with modified parameters by calling DECA's decoder directly. Easiest path: write a small script that loads a `.mat`, mutates `params['shape'][0][0] *= -1`, and passes the modified params back through FLAME's PyTorch layer to get a new `.obj`. The DECA repo has examples in `demos/demo_transfer.py` that do something similar (transferring expressions between faces). Read that script — it shows you exactly how to call FLAME with custom parameters.
+> If you ever go back to running DECA as a `!python` subprocess, this in-kernel patch will NOT carry over (a fresh interpreter won't see it) — you'd need the on-disk shim in `CONTEXT.md`. Staying in-kernel keeps it simple.
 
-You'll quickly find that flipping the sign of `shape[0][0]` makes the face wider or narrower (it's the largest principal component of head shape variation). Coefficients 1–10 each correspond to a major mode of variation; later ones encode finer detail. There's no fixed semantic label per dimension — they're learned — but with a few minutes of poking you'll have rough names for the first few ("face width," "head length," "nose prominence," etc.).
+### Cell 5 — build a renderer-free DECA and reconstruct
 
-**This is exactly the Skyrim-slider experience you described.** And it's the right intuition to have *before* designing a hash function: knowing which dimensions are perceptually loud vs quiet tells you what your transform should mutate hard vs leave alone.
+This is the cell that replaces the old `!python demos/demo_reconstruct.py …`.
 
-### 5.3 — Next milestones (in rough order)
+```python
+import torch, trimesh, numpy as np, os
+from decalib.deca import DECA
+from decalib.datasets import datasets
+from decalib.utils.config import cfg as deca_cfg
 
-1. **Get FLAME-only re-rendering working** — load params, modify, render new `.obj`, view it. Closes the loop on "I can manipulate the JSON and see the result."
-2. **Build a tiny parameter-editor UI** — extend the HTML viewer with a sidebar of sliders that maps to a few shape coefficients. Each slider edit triggers a re-render (you can do this client-side with three.js + FLAME-in-JS, or by round-tripping to a small Python backend).
-3. **Stage 2: the actual hash function** — design and plug in `transform(params, key) -> params'`. Start simple: seeded Gaussian offset on shape coefficients only.
-4. **Stage 4: photorealistic** — once the 3D pipeline works, layer in Arc2Face or InstantID to make the output a photo instead of a mesh. The mesh is great for understanding; a photorealistic result is great for the demo.
+# 1) Neuter the renderer so DECA() never calls set_rasterizer() -> no CUDA build, no PyTorch3D.
+DECA._setup_renderer = lambda self, model_cfg: None
+
+# 2) Untextured coarse mesh is all we need for Stage 1.
+deca_cfg.model.use_tex = False
+
+device = 'cuda'
+deca = DECA(config=deca_cfg, device=device)   # builds the ResNet encoder + FLAME; NO renderer
+
+# 3) FLAME topology (faces) — needed to turn vertices into a mesh, comes from FLAME, not the renderer.
+faces = deca.flame.faces_tensor.cpu().numpy()           # ⚠️ verify attr; fallback below
+# fallback if faces_tensor doesn't exist:
+# faces = trimesh.load(deca_cfg.model.topology_path, process=False).faces
+
+IN  = '/content/drive/MyDrive/Face-Hashing/Input'
+OUT = '/content/drive/MyDrive/Face-Hashing/Output'
+testdata = datasets.TestData(IN, iscrop=True, face_detector='fan')  # FAN detector crops to 224
+
+for i in range(len(testdata)):
+    d = testdata[i]
+    name = d['imagename']
+    images = d['image'].to(device)[None, ...]
+    with torch.no_grad():
+        codedict = deca.encode(images)                                  # photo -> params (no renderer)
+        verts, _, _ = deca.flame(shape_params=codedict['shape'],        # params -> mesh verts (no renderer)
+                                 expression_params=codedict['exp'],
+                                 pose_params=codedict['pose'])           # ⚠️ verify kwarg names
+    os.makedirs(f'{OUT}/{name}', exist_ok=True)
+    # mesh -> .glb (flat gray "Skyrim" vertex color)
+    mesh = trimesh.Trimesh(vertices=verts[0].cpu().numpy(), faces=faces, process=False)
+    mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=[180, 180, 200, 255])
+    mesh.export(f'{OUT}/{name}/{name}.glb')
+    # params -> .npz (your "JSON" — every key is a knob)
+    params = {k: v.detach().cpu().numpy() for k, v in codedict.items()
+              if torch.is_tensor(v)}
+    np.savez(f'{OUT}/{name}/{name}_params.npz', **params)
+    print('done', name, '| shape', params['shape'].shape, 'exp', params['exp'].shape)
+```
+
+If you hit `AttributeError: 'DECA' object has no attribute 'render'`, something is still calling the renderer — we're calling `deca.flame(...)` directly to avoid exactly that, so check you didn't call `deca.decode(...)`.
+
+### Cell 6 — the Skyrim-slider demo (mutate params, re-decode, no re-encode)
+
+```python
+import numpy as np, torch, trimesh
+
+name = '<one of your imagenames>'
+p = np.load(f'{OUT}/{name}/{name}_params.npz')
+shape = torch.tensor(p['shape']).to(device)
+exp   = torch.tensor(p['exp']).to(device)
+pose  = torch.tensor(p['pose']).to(device)
+
+# Tweak IDENTITY only; keep expression + pose so the face keeps its smile/angle.
+shape = shape.clone()
+shape[0, 0] *= -1.0     # flip the biggest shape PC (≈ face width)
+shape[0, 1] *= 1.5      # exaggerate the next mode
+# (later, Stage 2 replaces these hand-edits with a deterministic, key-seeded transform)
+
+with torch.no_grad():
+    verts, _, _ = deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
+mesh = trimesh.Trimesh(vertices=verts[0].cpu().numpy(), faces=faces, process=False)
+mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=[200, 180, 180, 255])  # warm = tweaked
+mesh.export(f'{OUT}/{name}/{name}_tweaked.glb')
+print('exported tweaked glb')
+```
+
+Now you have `name.glb` (original) and `name_tweaked.glb` (mutated identity) in Drive — drop both into the viewer and A/B them.
 
 ---
 
-## 6. If you get stuck
+## 4. The viewer (on the Mac)
 
-The first place to look is the DECA repo's **Issues** tab on GitHub — most install problems have been hit and resolved there. Search for your exact error message. Second, the EMOCA / INFERNO repos (https://github.com/radekd91/inferno) have more recent install instructions and sometimes their fixes apply to DECA.
+The page lives at `viewer/index.html`; `.glb` files go in `viewer/models/`. Copy the `.glb`s out of the synced Drive `Output/` into `viewer/models/`, add an `<option>` per model to the `<select>`, then serve over HTTP (`<model-viewer>` won't load `.glb` over `file://`):
 
-If you hit a wall, paste the full error traceback and tell me which cell failed. Most DECA issues are environmental (Python version, CUDA version, missing file) and quick to debug once we see the message.
+```bash
+cd viewer && python3 -m http.server 8080   # open http://localhost:8080
+```
 
-Good luck. The first time you see a 3D face spin in your browser that came from a photo you uploaded ten minutes ago, it's a great feeling.
+To compare original vs. tweaked, add both filenames as `<option>`s — the existing `<select>` swaps `viewer.src`.
+
+---
+
+## 5. Known footguns
+
+- **Colab resets wipe everything installed.** Free-tier kills idle sessions (~90 min) and the runtime's filesystem is ephemeral. Re-run Cells 1–4 on a fresh session (~a few minutes). Your photos/outputs survive because they live in Drive. **You can no longer pin Colab to Python 3.10** (it aged out of Colab's 1-year runtime window); 3.11 is the oldest selectable and the choice doesn't persist across sessions, so just make the setup cells idempotent and re-runnable.
+- **chumpy import errors** (`module 'inspect' has no attribute 'getargspec'`, or numpy `bool`/`str` AttributeErrors) mean Cell 4 didn't run before DECA was constructed (Cell 5). Run it first.
+- **Face detection quality.** DECA wants a clear, frontal-ish face; profile shots, sunglasses, hands/hair over the face, and tiny faces degrade it. EXIF rotation on iPhone photos is a common silent failure — if a detect fails, re-export the photo (bakes in rotation) or strip EXIF. One face per image (the demo reconstructs one).
+- **"It doesn't really look like me."** Expected, not a bug — single-image FLAME regression is constrained to FLAME's learned face manifold (generic noses, puffy chins). Recognizable but stylized. MICA gives more metric identity if this ever matters; don't switch yet.
+- **`deca.flame(...)` kwargs / `faces_tensor`** can differ slightly by DECA revision — the ⚠️ lines. If `faces_tensor` is missing, load faces from `deca_cfg.model.topology_path` (the bundled `head_template.obj`). If the `flame()` kwargs differ, check `decalib/models/FLAME.py`'s `forward` signature.
+
+---
+
+## 6. What to do when it works
+
+### Sanity check the identity vector
+Run Cell 5 on three photos of the same person and two of someone else; compare `shape` vectors:
+
+```python
+import numpy as np
+load = lambda n: np.load(f'{OUT}/{n}/{n}_params.npz')['shape'][0]
+a, b = load('personA_1'), load('personA_2')
+c    = load('personB_1')
+print("same person:", np.linalg.norm(a - b))
+print("different people:", np.linalg.norm(a - c))   # should be visibly larger
+```
+
+This is your first intuition for what the identity vector encodes.
+
+### The slider intuition (Cell 6)
+Flip/scale individual `shape` coefficients and re-view. The first few are the loud perceptual modes (face width, head length, nose prominence-ish); later ones are finer. Knowing which dims are loud vs. quiet is exactly what tells you what a Stage-2 hash should mutate hard vs. leave alone.
+
+### Next milestones
+1. ✅ Photo → params + mesh → viewer (this guide).
+2. ✅ Manually tweak params and re-render (Cell 6).
+3. **Stage 2 — the hash.** Replace the hand-edits with `transform(params, key) -> params'` behind a hot-swappable strategy interface (start: seeded Gaussian offset on `shape`, clamped to ±2σ; preserve `exp`/`pose`). See the research report.
+4. **Stage 4 — photorealism.** Layer Arc2Face / InstantID / PuLID once the 3D pipeline feels good.
+
+---
+
+## 7. Keeping the notebook, these docs, and Claude in sync
+
+The hard part of this project's workflow: the *live* notebook lives at a Colab URL (`colab/DECA.ipynb - Colab.webloc`), the repo has no canonical `.ipynb`, and Claude edits files in the repo — so the notebook and the docs/Claude drift apart easily. Three strategies, increasing robustness:
+
+1. **Markdown mirror (lowest effort, what this doc is).** §3's cells are the canonical text. When you change a cell in Colab, mirror it here (or vice-versa). Simple, but Claude never sees the *actual* notebook — you paste cell output when something breaks.
+2. **Version the notebook in the repo (recommended next step).** In Colab: **File → Save a copy in GitHub**, committing the `.ipynb` to this repo. Then Claude can read the real notebook and propose exact cell edits, and you have history. Notebooks are code, not gitignored data, so this is safe (your photos/weights stay in Drive). Re-save after meaningful changes.
+3. **Logic in a versioned `.py`, notebook as a thin runner (best; `pipeline.py` already exists for this).** The repo's `pipeline.py` folds Cells 1–4 into `bootstrap()` and Cells 5–6 into `load_deca()` / `reconstruct()` / `tweak()`. The whole notebook collapses to:
+
+   ```python
+   !git clone https://github.com/tragicallyludicrous/face-hashing.git
+   import sys; sys.path.insert(0, "face-hashing")
+   import pipeline
+   pipeline.bootstrap()                   # clone DECA, install, patch, cache weights
+   deca, faces = pipeline.load_deca()     # renderer-free DECA + FLAME topology
+   pipeline.reconstruct(deca, faces)      # Input/ -> Output/<name>/{.glb,_params.npz}
+   pipeline.tweak(deca, faces, "<name>")  # mutate identity, export <name>_tweaked.glb
+   ```
+
+   Claude authors `pipeline.py` directly (clean diffs, no notebook-JSON noise); the notebook barely changes; data still flows through Drive. It's also the natural home for the Stage-2 transform (extend `default_mutation` / add a strategy registry). To pick up edits in a later session, `!git -C face-hashing pull` (or re-clone). The ⚠️ "verify in Colab" lines from §3 live in `pipeline.py` too, with fallbacks.
+
+**Recommendation:** adopt #2 now (so the notebook is versioned and Claude can see ground truth), and migrate to #3 as the pipeline stabilizes. Keep this guide (#1) as the human-readable explanation regardless.

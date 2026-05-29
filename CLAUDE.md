@@ -28,18 +28,23 @@ There is no single runnable app. The system is split:
 - **Machine A — Google Colab (the GPU).** Runs DECA. The repo has no `.ipynb`; the live notebook lives at the Colab URL inside `colab/DECA.ipynb - Colab.webloc`. macOS lacks an NVIDIA GPU and PyTorch3D won't build locally, which is *why* DECA runs in Colab.
 - **Machine B — the Mac (the viewer).** A single static HTML page using Google's `<model-viewer>` web component to drag-rotate the `.glb`. No framework, no build step.
 
-**Handoff** between the two runs through the Google Drive alias (`Drive Folder` → `My Drive/Face-Hashing`, which holds `inputs/` and `outputs/`): the Mac drops input photos there, Colab mounts Drive to read them and writes results back, and the Mac picks up the `.glb`/params from the synced folder.
+**Handoff** between the two runs through the Google Drive alias (`Drive Folder` → `My Drive/Face-Hashing`, which holds `Input/`, `Output/`, the FLAME model, and a `cache/` for big downloads): the Mac drops input photos there, Colab mounts Drive to read them and writes results back, and the Mac picks up the `.glb`/params from the synced folder. Drive also serves as the **cross-restart cache** so free-tier resets don't re-download the 434 MB DECA weights.
 
 ## Commands
 
-**Run DECA (in a Colab cell)** — note this diverges from the setup guide: PyTorch3D is skipped entirely and visualization is off:
+**Run Stage 1 (in a Colab notebook).** DECA runs **in-kernel with no renderer**; `pipeline.py` wraps it so the notebook stays thin:
 
 ```python
-!python demos/demo_reconstruct.py -i TestSamples/examples -s outputs/examples \
-    --saveObj True --saveMat True --saveVis False
+!git clone https://github.com/tragicallyludicrous/face-hashing.git
+import sys; sys.path.insert(0, "face-hashing")
+import pipeline
+pipeline.bootstrap()                  # clone DECA, install, patch, cache weights (idempotent)
+deca, faces = pipeline.load_deca()    # renderer-free DECA + FLAME topology
+pipeline.reconstruct(deca, faces)     # Drive Input/ photos -> Output/<name>/{.glb,_params.npz}
+pipeline.tweak(deca, faces, "<name>") # mutate identity, re-export <name>_tweaked.glb
 ```
 
-`--saveMat True` produces the `.mat` of FLAME parameters (the "JSON"); `--saveObj True` produces the mesh; `--saveVis False` avoids the renderer.
+We do **not** use `demos/demo_reconstruct.py` or its CUDA rasterizer — `encode()` + the FLAME decoder produce the params + mesh without rendering. The cell-by-cell version (and the rationale) is in `face-hashing-setup.md`.
 
 **Serve the viewer locally (on the Mac):**
 
@@ -51,15 +56,16 @@ cd viewer && python3 -m http.server 8080   # then open http://localhost:8080
 
 ## Colab gotchas (re-run every session)
 
-Colab is Python 3.12 (DECA targets 3.7–3.10) and resets on disconnect, so its environment must be re-patched each session. Because each `!python` call is a fresh interpreter, **patches must be on disk (sed), not in-process monkey-patches.** The three required patches (from `CONTEXT.md`):
+Colab is Python 3.12 (DECA targets 3.7–3.10) and resets on disconnect, so setup re-runs each session — `pipeline.bootstrap()` handles it idempotently. Because we run **in-kernel** (no `!python` subprocess), the chumpy fix is a simple in-process monkeypatch, applied *before* any `decalib` import:
 
-```bash
-sed -i 's/inspect\.getargspec/inspect.getfullargspec/g' /usr/local/lib/python3.12/dist-packages/chumpy/ch.py
-sed -i 's/from numpy import bool, int, float, complex, object, unicode, str, nan, inf/from numpy import nan, inf/' /usr/local/lib/python3.12/dist-packages/chumpy/__init__.py
-sed -i 's/LandmarksType\._2D/LandmarksType.TWO_D/g' /content/DECA/decalib/datasets/detectors.py
+```python
+import inspect, numpy as np
+if not hasattr(inspect, 'getargspec'): inspect.getargspec = inspect.getfullargspec
+for a, r in [('bool',bool),('int',int),('float',float),('complex',complex),('object',object),('str',str),('unicode',str)]:
+    if not hasattr(np, a): setattr(np, a, r)
 ```
 
-DECA needs three weight files: `deca_model.tar` (gdown), and FLAME 2020's `generic_model.pkl` (registration-gated, uploaded manually). `.obj` → `.glb` conversion is done with `trimesh`, applying a flat gray vertex color (`[180,180,200,255]`) for the untextured "Skyrim" look.
+The detector also needs `LandmarksType._2D` → `TWO_D` patched in `decalib/datasets/detectors.py`. Weights are cached in Drive (`deca_model.tar` gdown'd **once** into `Face-Hashing/cache/` then copied locally each session; FLAME `generic_model.pkl` from `Face-Hashing/FLAME/...`). The `.glb` is built from FLAME verts + faces via `trimesh` with a flat gray vertex color (`[180,180,200,255]`) for the untextured "Skyrim" look. If you ever shell back out to `!python`, the in-kernel chumpy patch won't carry over — see the on-disk shim fallback in `CONTEXT.md`.
 
 ## Local-only / license-gated files (git-ignored)
 
@@ -74,8 +80,9 @@ Licensing: DECA's pretrained weights are research-only; FLAME 2020 is CC-BY with
 
 ## Doc map (authoritative order)
 
-- `CONTEXT.md` — **current truth**: live state, exact flags, applied patches, design decisions. Start here.
-- `face-hashing-setup.md` — original Stage-1 step-by-step. Useful background but **partly stale** (it still tells you to install PyTorch3D and use `--rasterizer_type=pytorch3d` / `--saveVis True`; the actual workflow dropped all of that). Its own header flags it as behind.
+- `CONTEXT.md` — **current truth**: live state, the in-kernel/no-renderer decision, patches, design decisions. Start here.
+- `face-hashing-setup.md` — the Stage-1 **procedural source of truth**: cell-by-cell notebook (in-kernel, no renderer), Drive caching for fast restarts, footguns. Rewritten 2026-05-29; current.
+- `pipeline.py` — reusable Colab module (`bootstrap` / `load_deca` / `reconstruct` / `tweak`) that the thin notebook imports.
 - `face_hashing_research_report.md` — deep reference on tools/approaches/pricing for all four stages. Consult when designing Stage 2+.
 
 ## Known discrepancies to be aware of

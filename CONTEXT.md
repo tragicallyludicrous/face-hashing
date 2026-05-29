@@ -48,50 +48,127 @@ No transform yet. Just proving the pipeline.
 
 ```
 face-hashing/
-├── README.md
+├── CLAUDE.md                       # guidance for Claude Code
+├── CONTEXT.md                      # this file — current truth
+├── face-hashing-setup.md           # Stage-1 procedural guide (cells + Drive caching)
+├── face_hashing_research_report.md # deep tool reference for Stages 2–4
+├── pipeline.py                     # reusable Colab module (bootstrap/load_deca/reconstruct/tweak)
 ├── colab/
-│   └── stage1_deca.ipynb          # The notebook (we'll build it in Colab and save here)
-├── outputs/                        # Where downloaded results go
-│   └── .gitkeep
+│   └── DECA.ipynb - Colab.webloc   # link to the live Colab notebook (no .ipynb in repo yet)
+├── outputs/.gitkeep                # results handed off via Drive; not committed
 ├── viewer/
-│   ├── index.html                  # The <model-viewer> page
-│   └── models/                     # .glb files go here
+│   ├── index.html                  # the <model-viewer> page
+│   └── models/.gitkeep             # .glb files go here (git-ignored)
 └── .gitignore
 ```
+(Personal photos, FLAME weights, and the `Drive Folder` alias are git-ignored.)
 
-## Where I am right now
+## Where I am right now (2026-05-29)
 
-- DECA cloned in Colab at /content/DECA
-- chumpy patched on disk (sed replaced inspect.getargspec and the broken numpy import)
-- face-alignment LandmarksType.\_2D patched to TWO_D via sed
-- FLAME 2020 uploaded manually, generic_model.pkl in data/
-- deca_model.tar downloaded via gdown, in data/
-- Skipping pytorch3d entirely; using --saveVis False
-- About to retry: !python demos/demo_reconstruct.py -i TestSamples/examples -s outputs/examples --saveObj True --saveMat True --saveVis False
+**Stage 1 runs in-kernel with NO renderer** (see Key decision below). The flow:
 
-## Patches applied to DECA's environment (need to re-run after Colab session resets)
+- In the Colab notebook process, construct DECA with its rasterizer neutered
+  (`DECA._setup_renderer = lambda self, m: None`), then call `deca.encode(img)` and the FLAME
+  decoder `deca.flame(shape, exp, pose)` directly → vertices → trimesh `.glb` + params `.npz`.
+  This replaces `demos/demo_reconstruct.py` entirely (no rasterizer, no `--saveVis`).
+- chumpy fixed with an **in-kernel monkeypatch** (inspect.getargspec + numpy aliases) —
+  sufficient now that we don't shell out to a `!python` subprocess.
+- face-alignment `LandmarksType._2D` → `TWO_D` patched in DECA's `detectors.py`.
+- Weights cached in Drive: `deca_model.tar` gdown'd once into `Face-Hashing/cache/` and copied
+  locally each session; FLAME `generic_model.pkl` copied from `Face-Hashing/FLAME/FLAME2020/`.
+- Exact cells: `face-hashing-setup.md` §3. Reusable module: `pipeline.py`.
+- ⚠️ Not yet verified in Colab: the FLAME faces attribute (`flame.faces_tensor`) and the
+  `flame()` kwarg names — fallbacks are noted in `pipeline.py` / the setup guide.
 
-- sed -i 's/inspect\.getargspec/inspect.getfullargspec/g' /usr/local/lib/python3.12/dist-packages/chumpy/ch.py
-- sed -i 's/from numpy import bool, int, float, complex, object, unicode, str, nan, inf/from numpy import nan, inf/' /usr/local/lib/python3.12/dist-packages/chumpy/**init**.py
-- sed -i 's/LandmarksType\.\_2D/LandmarksType.TWO_D/g' /content/DECA/decalib/datasets/detectors.py
+## Key decision (2026-05-29): in-kernel, no renderer, keep DECA
+
+After fighting DECA's build on modern Colab (chumpy, face-alignment, and a custom CUDA
+rasterizer that hardcodes gcc-7), three research agents converged on:
+
+- **The rasterizer is optional.** Our deliverables (param dict + mesh) come from `encode()`
+  (a plain ResNet) and the FLAME decoder — neither renders. The CUDA build only fires from
+  `set_rasterizer('standard')` in `DECA.__init__`; neuter it and the build is gone. This is
+  also why dropping the renderer doesn't hurt the Skyrim-slider demo — that demo is just
+  params → FLAME decoder → mesh → `.glb`, never a render.
+- **Don't switch tools to escape the build.** Every maintained successor (SMIRK CVPR'24,
+  EMOCA→INFERNO, MICA) depends on the SAME PyTorch3D and targets equally-old envs. FLAME's
+  shape/exp/pose is the cleanest match to "mutate identity, preserve expression", so DECA/FLAME
+  stays. SMIRK is bookmarked as a later *quality* upgrade (MIT, better expressions), not an
+  infra fix. MediaPipe is the escape hatch only if install-simplicity ever beats having a real
+  identity subspace — it has none, so it would weaken Stage 2.
+- **Run in-kernel.** Avoids the subprocess-loses-monkeypatch problem and is the setup Stage 2
+  needs anyway (load params → transform → re-decode, all live in the kernel).
+
+## Patches needed each cold start (ephemeral runtime; re-run after every reset)
+
+`site-packages` and `/content` are wiped on reset (Drive persists). `pipeline.bootstrap()`
+re-applies these idempotently. With the in-kernel approach they're simple:
+
+**1. chumpy — in-kernel monkeypatch, run BEFORE importing decalib/chumpy:**
+
+```python
+import inspect, numpy as np
+if not hasattr(inspect, 'getargspec'):
+    inspect.getargspec = inspect.getfullargspec
+for a, r in [('bool',bool),('int',int),('float',float),('complex',complex),
+             ('object',object),('str',str),('unicode',str)]:
+    if not hasattr(np, a): setattr(np, a, r)
+```
+
+**2. face-alignment** — replace `LandmarksType._2D` → `LandmarksType.TWO_D` in
+`/content/DECA/decalib/datasets/detectors.py` (a hard reference resolved at import).
+
+> **Fallback, only if you ever run DECA as a `!python` subprocess again:** the in-kernel
+> patch won't carry into a fresh interpreter (that's what bit us with `demo_reconstruct.py` —
+> `AttributeError: module 'inspect' has no attribute 'getargspec'` at `chumpy/ch.py:1203`).
+> Then prepend an on-disk shim to chumpy's `__init__.py` so it runs on every `import chumpy`:
+>
+> ```python
+> import os, chumpy
+> shim = (
+>     "import numpy as _np, inspect as _inspect\n"
+>     "if not hasattr(_inspect, 'getargspec'):\n"
+>     "    _inspect.getargspec = _inspect.getfullargspec\n"
+>     "for _a, _r in [('bool',bool),('int',int),('float',float),('complex',complex),('object',object),('str',str),('unicode',str)]:\n"
+>     "    if not hasattr(_np, _a):\n"
+>     "        setattr(_np, _a, _r)\n"
+>     "# --- end DECA-on-py312 shim ---\n"
+> )
+> p = os.path.join(os.path.dirname(chumpy.__file__), '__init__.py')
+> s = open(p).read()
+> if 'DECA-on-py312 shim' not in s: open(p, 'w').write(shim + s)
+> ```
+>
+> It *restores* the numpy aliases rather than stripping the `from numpy import bool, …` line,
+> which chumpy uses internally during the FLAME `pickle.load`. Not needed for the in-kernel path.
 
 ## Known design decisions
 
-- DECA over EMOCA/MICA for first pass (most docs, easiest)
-- Untextured mesh (gray vertex color) for the Skyrim aesthetic
-- <model-viewer> for the browser viewer (one HTML tag, no three.js code)
-- .obj → .glb conversion via trimesh (model-viewer doesn't load .obj)
+- Keep DECA/FLAME over switching (successors share the PyTorch3D dependency; FLAME params fit
+  the hash design) — see Key decision above.
+- Run DECA in-kernel and skip the rasterizer (params + mesh need no rendering).
+- Untextured coarse mesh (gray vertex color) for the Skyrim aesthetic.
+- `<model-viewer>` for the browser viewer (one HTML tag, no three.js code).
+- FLAME verts + faces → `.glb` via trimesh (model-viewer doesn't load `.obj`).
+- Google Drive doubles as the cross-restart cache: big/slow downloads (the 434 MB weights) live
+  there; only cheap steps (repo clone, pip, patches) are redone each session. Do NOT persist
+  `site-packages` to Drive — native libs load flakily over the FUSE mount.
 
 ## Open questions / known footguns
 
-- Each !python subprocess in Colab is a fresh interpreter and doesn't inherit
-  in-process monkey-patches; patches must be on disk
-- Colab is on Python 3.12, well ahead of what DECA expects (3.7-3.10)
-- No prebuilt PyTorch3D wheel exists for current Colab (PyTorch 2.10/CUDA 12.8)
-- Once Stage 1 works: implement Stage 2 (the transform) as a strategy pattern
-  so the algorithm is hot-swappable
+- Stage 2: implement `transform(params, key) -> params'` as a hot-swappable strategy
+  (start: seeded Gaussian offset on `shape`, clamp ±2σ; preserve `exp`/`pose`). Extend
+  `pipeline.default_mutation` / add a registry.
+- ⚠️ Verify the DECA API specifics in Colab (faces attribute, `flame()` kwargs).
+- Colab is Python 3.12 (DECA targets 3.7–3.10). You can NO LONGER pin Colab to 3.10 (aged out
+  of the 1-year runtime window); 3.11 is the oldest selectable and the choice doesn't persist
+  across sessions — so keep setup idempotent instead.
+- Correction to an earlier note: a prebuilt PyTorch3D wheel DOES now exist for modern stacks
+  (MiroPsota builder, through Torch 2.6 / cu126 / py3.14) — relevant only if you ever want
+  rendering back; the in-kernel path needs no PyTorch3D at all.
 
-## Reference: the two setup-guide artifacts from the Claude.ai conversation
+## Reference
 
-./face_hashing_research_report.md
-./face-hashing-setup.md <!-- this is a bit off of the existing workflow as it hasn't been updated as we've worked through the project -->
+- `face-hashing-setup.md` — the current Stage-1 procedural source of truth (cells + caching).
+- `pipeline.py` — reusable module (`bootstrap` / `load_deca` / `reconstruct` / `tweak`).
+- `face_hashing_research_report.md` — deep tool reference for Stages 2–4.
