@@ -1,0 +1,22 @@
+# Outputs (kept local / synced via the Google Drive alias, not committed)
+outputs/*
+!outputs/.gitkeep
+viewer/models/*.glb
+
+# Personal input photos — live in the Google Drive alias for Colab handoff
+inputs/
+
+# FLAME 2020 model weights — registration-gated, non-commercial license, ~153MB
+colab/FLAME2020/
+
+# macOS Google Drive bookmark (machine-specific alias)
+Drive Folder
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Junk / Python
+.DS_Store
+__pycache__/
+*.pyc
+.venv/

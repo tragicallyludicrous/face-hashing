@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Face Hashing — Stage 1 viewer</title>
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #eee; }
+    main { max-width: 900px; margin: 2rem auto; padding: 1rem; }
+    model-viewer {
+      width: 100%;
+      height: 70vh;
+      background: linear-gradient(180deg, #222, #111);
+      --poster-color: transparent;
+    }
+    h1 { font-weight: 300; }
+    label { display: block; margin: 1rem 0 0.5rem; }
+    select { padding: 0.4rem; background: #222; color: #eee; border: 1px solid #444; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Face Hashing — Stage 1</h1>
+    <label for="model-select">Model:</label>
+    <select id="model-select">
+      <option value="models/alfw2000.glb">alfw2000 (example)</option>
+    </select>
+    <model-viewer
+      id="viewer"
+      src="models/alfw2000.glb"
+      camera-controls
+      auto-rotate
+      auto-rotate-delay="3000"
+      shadow-intensity="1"
+      exposure="1.1"
+      camera-orbit="0deg 75deg 0.5m"
+      field-of-view="30deg"
+      alt="Reconstructed 3D face"
+    ></model-viewer>
+  </main>
+  <script>
+    const sel = document.getElementById('model-select');
+    const viewer = document.getElementById('viewer');
+    sel.addEventListener('change', e => { viewer.src = e.target.value; });
+  </script>
+</body>
+</html>
