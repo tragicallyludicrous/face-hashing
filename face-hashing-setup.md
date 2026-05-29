@@ -156,19 +156,19 @@ Copy the `_neutral.glb`s into `viewer/models/` — they all share one canonical 
 
 ## 6. What to do when it works
 
-### Sanity check the identity vector
-After reconstructing several photos (a few of the same person, a couple of someone else), compare their `shape` vectors:
+### Sanity-check identity *consistency* (`pipeline.consistency_report`)
+For a hash, the same person must land on the same identity vector across photos. Label which photos are which person (≥2 per person for at least one), then measure:
 
 ```python
-import numpy as np
-load = lambda n: np.load(f'{OUT}/{n}/{n}_params.npz')['shape'][0]   # OUT = .../Face-Hashing/Output
-a, b = load('personA_1'), load('personA_2')
-c    = load('personB_1')
-print("same person:", np.linalg.norm(a - b))
-print("different people:", np.linalg.norm(a - c))   # should be visibly larger
+!pip install -q insightface onnxruntime    # ArcFace baseline; CPU is fine
+import importlib, pipeline; importlib.reload(pipeline)
+pipeline.consistency_report({
+    '000002540007': 'p1', 'IMG_1237': 'p1',   # same person, multiple photos
+    'IMG_3642': 'p2', 'IMG_4863': 'p2',
+})
 ```
 
-This is your first intuition for what the identity vector encodes.
+It prints, per extractor, mean intra-/inter-person distance, the **inter/intra separation ratio** (higher = better), and a verification **AUC** (1.0 = perfect). It compares **DECA shape** (the current carrier, L2) against the **ArcFace `buffalo_l`** embedding (cosine) — the consistency *ceiling*. Expect ArcFace to separate identities far more cleanly: DECA shape drifts because it optimizes per-photo reconstruction, not identity invariance. This is the read that says whether the identity carrier is stable enough to hash — and the case for making ArcFace (bridged to FLAME via MICA) the identity backbone in a later stage.
 
 ### The tweak intuition (`pipeline.tweak`)
 `tweak` flips/scales `shape` coefficients and re-decodes. The first few coefficients are the loud perceptual modes (face width, head length, nose prominence-ish); later ones are finer. Knowing which dims are loud vs. quiet is exactly what tells you what a Stage-2 hash should mutate hard vs. leave alone. Pass your own `mutate=` to `tweak` to experiment.

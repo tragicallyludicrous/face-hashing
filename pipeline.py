@@ -258,3 +258,106 @@ def export_neutral(deca, faces, name, out_dir=OUT_DIR, keep_expression=False,
     verts = _decode_verts(deca, shape, exp, pose)
     _export_glb(verts, faces, f"{out_dir}/{name}/{name}_neutral.glb", color=color)
     print("exported", f"{name}_neutral.glb")
+
+
+# --- identity-consistency measurement -----------------------------------------------------
+# For a *hash*, the same person must map to the same identity vector across photos. DECA's
+# `shape` is a reconstruction objective, not an identity-invariance one, so it drifts; ArcFace
+# (a face-recognition embedding) is trained for exactly that invariance, so it's the ceiling.
+# Needs: pip install insightface onnxruntime   (opencv/numpy already come from bootstrap)
+
+def _arcface_app(_cache={}):
+    """Lazily build + cache an InsightFace buffalo_l app. CPU is fine for embeddings."""
+    if "app" not in _cache:
+        try:
+            from insightface.app import FaceAnalysis
+        except ImportError as e:
+            raise ImportError("ArcFace needs InsightFace: pip install insightface onnxruntime") from e
+        app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+        app.prepare(ctx_id=-1, det_size=(640, 640))   # downloads buffalo_l on first call
+        _cache["app"] = app
+    return _cache["app"]
+
+
+def arcface_embed(image_path):
+    """512-d, L2-normalized ArcFace identity embedding for the largest face (or None)."""
+    import cv2
+    img = cv2.imread(image_path) if image_path else None
+    if img is None:
+        return None
+    faces = _arcface_app().get(img)
+    if not faces:
+        return None
+    return max(faces, key=lambda f: f.det_score).normed_embedding   # already L2-normalized
+
+
+def _find_input(stem, in_dir):
+    import glob
+    hits = sorted(glob.glob(os.path.join(in_dir, stem + ".*")))
+    return hits[0] if hits else None
+
+
+def _pairwise(vecs_by_person, metric):
+    """All pairwise distances split into same-person (intra) and different-person (inter)."""
+    import numpy as np
+    import itertools
+    items = [(p, np.asarray(v, float).ravel())
+             for p, vs in vecs_by_person.items() for v in vs if v is not None]
+    persons = [p for p, _ in items]
+    X = [v for _, v in items]
+    if metric == "cos":
+        dist = lambda a, b: 1.0 - float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+    else:
+        dist = lambda a, b: float(np.linalg.norm(a - b))
+    intra, inter = [], []
+    for i, j in itertools.combinations(range(len(X)), 2):
+        (intra if persons[i] == persons[j] else inter).append(dist(X[i], X[j]))
+    return np.array(intra), np.array(inter)
+
+
+def _auc(intra, inter):
+    """P(a same-person pair is closer than a different-person pair). 1.0 = perfect separation."""
+    if not len(intra) or not len(inter):
+        return float("nan")
+    wins = sum(float((a < inter).sum() + 0.5 * (a == inter).sum()) for a in intra)
+    return wins / (len(intra) * len(inter))
+
+
+def consistency_report(person_of, in_dir=IN_DIR, out_dir=OUT_DIR, extractors=("deca", "arcface")):
+    """How stable is each extractor's identity vector across photos of the same person?
+
+    person_of: {imagename_stem: person_label}. Need >=2 photos for at least one person so the
+    same-person (intra) bucket is non-empty. Prints, per extractor: mean intra/inter identity
+    distance, the inter/intra separation ratio (higher = better), and a verification AUC
+    (1.0 = same-person pairs always closer than different-person pairs).
+
+    DECA shape (from <stem>_params.npz, L2) is the current carrier; ArcFace buffalo_l (cosine,
+    from the original photo in in_dir) is the consistency ceiling to compare against.
+    """
+    import numpy as np
+    by = {}
+    for stem, p in person_of.items():
+        by.setdefault(p, []).append(stem)
+
+    rows = []
+    if "deca" in extractors:
+        def deca_vec(s):
+            f = f"{out_dir}/{s}/{s}_params.npz"
+            return np.load(f)["shape"].ravel() if os.path.exists(f) else None
+        intra, inter = _pairwise({p: [deca_vec(s) for s in ss] for p, ss in by.items()}, "l2")
+        rows.append(("DECA shape", "l2", intra, inter))
+    if "arcface" in extractors:
+        def arc_vec(s):
+            return arcface_embed(_find_input(s, in_dir))
+        intra, inter = _pairwise({p: [arc_vec(s) for s in ss] for p, ss in by.items()}, "cos")
+        rows.append(("ArcFace buffalo_l", "cos", intra, inter))
+
+    print(f"{'extractor':<18} {'metric':<6} {'intra':>7} {'inter':>7} {'sep(x)':>7} {'AUC':>6}")
+    out = {}
+    for name, metric, intra, inter in rows:
+        ratio = inter.mean() / (intra.mean() + 1e-9) if len(intra) and len(inter) else float("nan")
+        auc = _auc(intra, inter)
+        print(f"{name:<18} {metric:<6} {intra.mean():>7.3f} {inter.mean():>7.3f} "
+              f"{ratio:>7.2f} {auc:>6.3f}")
+        out[name] = {"intra": intra, "inter": inter, "ratio": ratio, "auc": auc}
+    return out
