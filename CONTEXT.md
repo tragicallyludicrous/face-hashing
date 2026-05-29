@@ -77,8 +77,11 @@ face-hashing/
 - Weights cached in Drive: `deca_model.tar` gdown'd once into `Face-Hashing/cache/` and copied
   locally each session; FLAME `generic_model.pkl` copied from `Face-Hashing/FLAME/FLAME2020/`.
 - Exact cells: `face-hashing-setup.md` §3. Reusable module: `pipeline.py`.
-- ⚠️ Not yet verified in Colab: the FLAME faces attribute (`flame.faces_tensor`) and the
-  `flame()` kwarg names — fallbacks are noted in `pipeline.py` / the setup guide.
+- Verified in Colab: the in-kernel path produces `.glb` + params (the `flame.faces_tensor`
+  attribute and `flame()` kwargs are confirmed on this DECA build; first image succeeded).
+- Inputs are downscaled to ≤1024 px (+ EXIF-rotated) before the FAN detector — it otherwise
+  runs on the full image and OOMs a free-tier T4 on large phone photos — and GPU memory is freed
+  per image. `.jpeg` is handled via an explicit file list (TestData's glob misses it).
 
 ## Key decision (2026-05-29): in-kernel, no renderer, keep DECA
 
@@ -159,7 +162,10 @@ for a, r in [('bool',bool),('int',int),('float',float),('complex',complex),
 - Stage 2: implement `transform(params, key) -> params'` as a hot-swappable strategy
   (start: seeded Gaussian offset on `shape`, clamp ±2σ; preserve `exp`/`pose`). Extend
   `pipeline.default_mutation` / add a registry.
-- ⚠️ Verify the DECA API specifics in Colab (faces attribute, `flame()` kwargs).
+- DECA's `TestData` directory glob misses `.jpeg` (only `*.jpg/*.png/*.bmp`) → silent 0-image
+  no-op; pass an explicit file list. The FAN detector runs on the full image and OOMs a T4 on
+  large phone photos → downscale to ≤1024 px before detection and free GPU memory per image
+  (after an OOM, restart the runtime — IPython's saved traceback pins the GPU memory).
 - Colab is Python 3.12 (DECA targets 3.7–3.10). You can NO LONGER pin Colab to 3.10 (aged out
   of the 1-year runtime window); 3.11 is the oldest selectable and the choice doesn't persist
   across sessions — so keep setup idempotent instead.

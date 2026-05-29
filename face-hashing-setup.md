@@ -74,7 +74,7 @@ cache/deca_model.tar              # gdown'd once, reused every session
 
 Order matters: mount Drive first (Cell 1); run the chumpy patch (Cell 4) before DECA is constructed (Cell 5).
 
-> ⚠️ **"verify in Colab":** a few DECA API details (the FLAME faces attribute, the `flame()` kwargs) vary by revision — fallbacks noted inline.
+> **Portability note:** two DECA API details (the FLAME faces attribute, the `flame()` kwargs) vary by revision; both are verified on the current build, with fallbacks noted inline.
 
 ### Cell 1 — mount Drive + define paths
 
@@ -156,34 +156,45 @@ deca_cfg.model.use_tex = False
 device = 'cuda'
 deca = DECA(config=deca_cfg, device=device)   # builds the ResNet encoder + FLAME; NO renderer
 
-# 3) FLAME topology (faces) — needed to turn vertices into a mesh, comes from FLAME, not the renderer.
-faces = deca.flame.faces_tensor.cpu().numpy()           # ⚠️ verify attr; fallback below
-# fallback if faces_tensor doesn't exist:
+# 3) FLAME topology (faces) — needed to turn vertices into a mesh; comes from FLAME, not the renderer.
+faces = deca.flame.faces_tensor.cpu().numpy()
+# (fallback if faces_tensor is absent on your DECA build:)
 # faces = trimesh.load(deca_cfg.model.topology_path, process=False).faces
 
 IN  = '/content/drive/MyDrive/Face-Hashing/Input'
 OUT = '/content/drive/MyDrive/Face-Hashing/Output'
-testdata = datasets.TestData(IN, iscrop=True, face_detector='fan')  # FAN detector crops to 224
 
+# Downscale (+ EXIF-rotate) into a temp dir BEFORE detection: the FAN detector runs on the FULL
+# image and OOMs a T4 on big phone photos; DECA only needs ~224 px around the face. The explicit
+# list also sidesteps DECA's TestData glob, which misses .jpeg.
+from PIL import Image, ImageOps
+import gc
+exts, MAXSIDE, TMP = ('.jpg', '.jpeg', '.png', '.bmp'), 1024, '/content/_resized'
+os.makedirs(TMP, exist_ok=True)
+paths = []
+for f in sorted(os.listdir(IN)):
+    if os.path.splitext(f)[1].lower() not in exts: continue
+    im = ImageOps.exif_transpose(Image.open(os.path.join(IN, f)).convert('RGB'))
+    im.thumbnail((MAXSIDE, MAXSIDE))
+    p = os.path.join(TMP, os.path.splitext(f)[0] + '.jpg'); im.save(p, quality=95); paths.append(p)
+
+testdata = datasets.TestData(paths, iscrop=True, face_detector='fan')  # FAN detector crops to 224
 for i in range(len(testdata)):
-    d = testdata[i]
-    name = d['imagename']
-    images = d['image'].to(device)[None, ...]
     with torch.no_grad():
+        d = testdata[i]; name = d['imagename']
+        images = d['image'].to(device)[None, ...]
         codedict = deca.encode(images)                                  # photo -> params (no renderer)
         verts, _, _ = deca.flame(shape_params=codedict['shape'],        # params -> mesh verts (no renderer)
                                  expression_params=codedict['exp'],
-                                 pose_params=codedict['pose'])           # ⚠️ verify kwarg names
+                                 pose_params=codedict['pose'])
     os.makedirs(f'{OUT}/{name}', exist_ok=True)
-    # mesh -> .glb (flat gray "Skyrim" vertex color)
     mesh = trimesh.Trimesh(vertices=verts[0].cpu().numpy(), faces=faces, process=False)
-    mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=[180, 180, 200, 255])
+    mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=[180, 180, 200, 255])  # flat gray "Skyrim"
     mesh.export(f'{OUT}/{name}/{name}.glb')
-    # params -> .npz (your "JSON" — every key is a knob)
-    params = {k: v.detach().cpu().numpy() for k, v in codedict.items()
-              if torch.is_tensor(v)}
-    np.savez(f'{OUT}/{name}/{name}_params.npz', **params)
-    print('done', name, '| shape', params['shape'].shape, 'exp', params['exp'].shape)
+    params = {k: v.detach().cpu().numpy() for k, v in codedict.items() if torch.is_tensor(v) and k != 'images'}
+    np.savez(f'{OUT}/{name}/{name}_params.npz', **params)               # your "JSON" — every key is a knob
+    del images, codedict, verts; gc.collect(); torch.cuda.empty_cache()  # free GPU mem between images
+    print('ok', name, '| shape', params['shape'].shape)
 ```
 
 If you hit `AttributeError: 'DECA' object has no attribute 'render'`, something is still calling the renderer — we're calling `deca.flame(...)` directly to avoid exactly that, so check you didn't call `deca.decode(...)`.
@@ -233,9 +244,11 @@ To compare original vs. tweaked, add both filenames as `<option>`s — the exist
 
 - **Colab resets wipe everything installed.** Free-tier kills idle sessions (~90 min) and the runtime's filesystem is ephemeral. Re-run Cells 1–4 on a fresh session (~a few minutes). Your photos/outputs survive because they live in Drive. **You can no longer pin Colab to Python 3.10** (it aged out of Colab's 1-year runtime window); 3.11 is the oldest selectable and the choice doesn't persist across sessions, so just make the setup cells idempotent and re-runnable.
 - **chumpy import errors** (`module 'inspect' has no attribute 'getargspec'`, or numpy `bool`/`str` AttributeErrors) mean Cell 4 didn't run before DECA was constructed (Cell 5). Run it first.
+- **`TestData` silently finds 0 images** (run ends with no `ok …` prints and no error). DECA's directory glob only matches `*.jpg/*.png/*.bmp`, so `.jpeg` and uppercase extensions yield an empty set. Cell 5 avoids this by passing an explicit, case-insensitive file list rather than the directory path — keep that if you change input loading.
+- **CUDA out of memory in the FAN detector** (OOM at `data[i]` → `conv2d`, trying to allocate many GiB). The face detector runs on the *full-resolution* image, and phone photos are big enough to blow the T4's ~14.5 GB. Cell 5 downscales each image to ≤1024 px before detection (DECA only needs ~224 px around the face) and frees GPU memory each iteration. If an OOM still leaves the GPU pinned (IPython's saved traceback holds the tensors), `Runtime → Restart`, then re-run setup + this cell.
 - **Face detection quality.** DECA wants a clear, frontal-ish face; profile shots, sunglasses, hands/hair over the face, and tiny faces degrade it. EXIF rotation on iPhone photos is a common silent failure — if a detect fails, re-export the photo (bakes in rotation) or strip EXIF. One face per image (the demo reconstructs one).
 - **"It doesn't really look like me."** Expected, not a bug — single-image FLAME regression is constrained to FLAME's learned face manifold (generic noses, puffy chins). Recognizable but stylized. MICA gives more metric identity if this ever matters; don't switch yet.
-- **`deca.flame(...)` kwargs / `faces_tensor`** can differ slightly by DECA revision — the ⚠️ lines. If `faces_tensor` is missing, load faces from `deca_cfg.model.topology_path` (the bundled `head_template.obj`). If the `flame()` kwargs differ, check `decalib/models/FLAME.py`'s `forward` signature.
+- **`deca.flame(...)` kwargs / `faces_tensor`** (verified on the current DECA build; portability note for other revisions). If `faces_tensor` is missing, load faces from `deca_cfg.model.topology_path` (the bundled `head_template.obj`). If the `flame()` kwargs differ, check `decalib/models/FLAME.py`'s `forward` signature.
 
 ---
 
@@ -284,6 +297,6 @@ The hard part of this project's workflow: the *live* notebook lives at a Colab U
    pipeline.tweak(deca, faces, "<name>")  # mutate identity, export <name>_tweaked.glb
    ```
 
-   Claude authors `pipeline.py` directly (clean diffs, no notebook-JSON noise); the notebook barely changes; data still flows through Drive. It's also the natural home for the Stage-2 transform (extend `default_mutation` / add a strategy registry). To pick up edits in a later session, `!git -C face-hashing pull` (or re-clone). The ⚠️ "verify in Colab" lines from §3 live in `pipeline.py` too, with fallbacks.
+   Claude authors `pipeline.py` directly (clean diffs, no notebook-JSON noise); the notebook barely changes; data still flows through Drive. It's also the natural home for the Stage-2 transform (extend `default_mutation` / add a strategy registry). To pick up edits in a later session, `!git -C face-hashing pull` (or re-clone). The same portability fallbacks from §3 are in `pipeline.py` too.
 
 **Recommendation:** adopt #2 now (so the notebook is versioned and Claude can see ground truth), and migrate to #3 as the pipeline stabilizes. Keep this guide (#1) as the human-readable explanation regardless.

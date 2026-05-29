@@ -24,7 +24,8 @@ Why this shape (see CONTEXT.md "Key decision 2026-05-29"):
 decalib / chumpy are imported LAZILY (after bootstrap applies the chumpy patch), never at
 module top level — so this file is safe to import anywhere (e.g. for editing/linting).
 
-⚠️ Two DECA-API details vary by revision and are marked below; fallbacks are inline.
+Two DECA-API details (the FLAME faces attribute and the flame() kwargs) vary by revision;
+both are verified on the current DECA build, with fallbacks inline.
 """
 
 import os
@@ -143,8 +144,8 @@ def load_deca(device="cuda", use_tex=False):
     deca = DECA(config=deca_cfg, device=device)
 
     try:
-        faces = deca.flame.faces_tensor.detach().cpu().numpy()  # ⚠️ verify attr name in Colab
-    except AttributeError:
+        faces = deca.flame.faces_tensor.detach().cpu().numpy()
+    except AttributeError:  # some DECA revisions expose the topology differently
         import trimesh
         faces = trimesh.load(deca_cfg.model.topology_path, process=False).faces  # fallback: template obj
     return deca, faces
@@ -154,9 +155,7 @@ def _decode_verts(deca, shape, exp, pose):
     """FLAME params -> mesh vertices, calling the decoder directly (no renderer)."""
     import torch
     with torch.no_grad():
-        verts, _, _ = deca.flame(  # ⚠️ verify kwarg names against decalib/models/FLAME.py
-            shape_params=shape, expression_params=exp, pose_params=pose,
-        )
+        verts, _, _ = deca.flame(shape_params=shape, expression_params=exp, pose_params=pose)
     return verts
 
 
@@ -168,25 +167,52 @@ def _export_glb(verts, faces, path, color=(180, 180, 200, 255)):
     mesh.export(path)
 
 
-def reconstruct(deca, faces, in_dir=IN_DIR, out_dir=OUT_DIR, detector="fan"):
+def _prepare_inputs(in_dir, max_side=1024, tmp="/content/_resized"):
+    """Downscale (<=max_side) + EXIF-rotate every image into tmp, return the list of temp paths.
+
+    The FAN detector runs on the FULL image and OOMs a free-tier T4 on large phone photos, while
+    DECA only needs ~224 px around the face. Passing an explicit list also sidesteps DECA's
+    TestData directory glob, which misses .jpeg (it only globs *.jpg/*.png/*.bmp).
+    """
+    from PIL import Image, ImageOps
+    exts = (".jpg", ".jpeg", ".png", ".bmp")
+    os.makedirs(tmp, exist_ok=True)
+    paths = []
+    for f in sorted(os.listdir(in_dir)):
+        if os.path.splitext(f)[1].lower() not in exts:
+            continue
+        im = ImageOps.exif_transpose(Image.open(os.path.join(in_dir, f)).convert("RGB"))
+        im.thumbnail((max_side, max_side))
+        p = os.path.join(tmp, os.path.splitext(f)[0] + ".jpg")
+        im.save(p, quality=95)
+        paths.append(p)
+    return paths
+
+
+def reconstruct(deca, faces, in_dir=IN_DIR, out_dir=OUT_DIR, detector="fan", max_side=1024):
     """Every photo in in_dir -> out_dir/<name>/{<name>.glb, <name>_params.npz}. Returns the names."""
+    import gc
     import torch
     import numpy as np
     from decalib.datasets import datasets
 
-    data = datasets.TestData(in_dir, iscrop=True, face_detector=detector)  # FAN detector crops to 224
+    paths = _prepare_inputs(in_dir, max_side=max_side)
+    data = datasets.TestData(paths, iscrop=True, face_detector=detector)  # FAN detector crops to 224
     names = []
     for i in range(len(data)):
-        d = data[i]
-        name = d["imagename"]
-        images = d["image"].to(deca.device)[None, ...]
         with torch.no_grad():
+            d = data[i]
+            name = d["imagename"]
+            images = d["image"].to(deca.device)[None, ...]
             codedict = deca.encode(images)
-        verts = _decode_verts(deca, codedict["shape"], codedict["exp"], codedict["pose"])
+            verts = _decode_verts(deca, codedict["shape"], codedict["exp"], codedict["pose"])
         _export_glb(verts, faces, f"{out_dir}/{name}/{name}.glb")
         params = {k: v.detach().cpu().numpy()
                   for k, v in codedict.items() if torch.is_tensor(v) and k != "images"}
         np.savez(f"{out_dir}/{name}/{name}_params.npz", **params)
+        del images, codedict, verts  # free GPU memory between images (T4 headroom is tight)
+        gc.collect()
+        torch.cuda.empty_cache()
         print("ok", name, "| shape", params["shape"].shape, "exp", params["exp"].shape)
         names.append(name)
     return names
