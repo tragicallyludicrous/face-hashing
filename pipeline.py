@@ -237,3 +237,24 @@ def tweak(deca, faces, name, mutate=default_mutation, out_dir=OUT_DIR, color=(20
     verts = _decode_verts(deca, shape, exp, pose)
     _export_glb(verts, faces, f"{out_dir}/{name}/{name}_tweaked.glb", color=color)
     print("exported", f"{name}_tweaked.glb")
+
+
+def export_neutral(deca, faces, name, out_dir=OUT_DIR, keep_expression=False,
+                   color=(180, 180, 200, 255)):
+    """Re-export <name> with global head pose zeroed (and expression too, unless keep_expression).
+
+    DECA bakes the source photo's head rotation into the mesh via the pose param, so meshes from
+    different photos point different ways and never line up in the viewer. Zeroing pose puts every
+    identity in one canonical, frontal orientation -> switching models compares geometry, not pose.
+    Writes <name>_neutral.glb alongside the others.
+    """
+    import torch
+    import numpy as np
+    p = np.load(f"{out_dir}/{name}/{name}_params.npz")
+    shape = torch.tensor(p["shape"]).to(deca.device)
+    pose = torch.zeros_like(torch.tensor(p["pose"])).to(deca.device)          # frontal, jaw closed
+    exp = (torch.tensor(p["exp"]) if keep_expression
+           else torch.zeros_like(torch.tensor(p["exp"]))).to(deca.device)
+    verts = _decode_verts(deca, shape, exp, pose)
+    _export_glb(verts, faces, f"{out_dir}/{name}/{name}_neutral.glb", color=color)
+    print("exported", f"{name}_neutral.glb")

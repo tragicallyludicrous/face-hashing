@@ -27,8 +27,7 @@
     <model-viewer
       id="viewer"
       camera-controls
-      auto-rotate
-      auto-rotate-delay="3000"
+      interaction-prompt="none"
       shadow-intensity="1"
       exposure="1.1"
       camera-orbit="0deg 75deg auto"
@@ -40,6 +39,18 @@
     const sel = document.getElementById('model-select');
     const viewer = document.getElementById('viewer');
     const status = document.getElementById('status');
+
+    // Keep the viewpoint fixed across model switches so faces compare at the same angle.
+    // (The mesh's own orientation still depends on how it was exported — use neutral .glbs,
+    //  e.g. pipeline.export_neutral, for a true apples-to-apples shape comparison.)
+    let savedOrbit = null;
+    viewer.addEventListener('camera-change', () => { savedOrbit = viewer.getCameraOrbit(); });
+    viewer.addEventListener('load', () => {
+      if (savedOrbit) {
+        viewer.cameraOrbit = `${savedOrbit.theta}rad ${savedOrbit.phi}rad ${savedOrbit.radius}m`;
+        viewer.jumpCameraToGoal();
+      }
+    });
     sel.addEventListener('change', e => { viewer.src = e.target.value; });
 
     // Auto-discover every .glb in models/ by parsing the directory listing the static server

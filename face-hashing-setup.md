@@ -243,6 +243,14 @@ The page lives at `viewer/index.html`; `.glb` files go in `viewer/models/`. The 
 
 Filenames with spaces (e.g. the `hoga …` one) work as-is — the directory listing URL-encodes them. If the dropdown stays empty, you opened the page over `file://` (the listing fetch only works over `http://`) — use the `http.server` command above.
 
+**Comparing faces (making them line up).** DECA bakes each photo's head pose into its mesh, so faces from different photos point different directions and won't align no matter how you rotate the camera. For an apples-to-apples *shape* comparison, export neutral (frontal, expression-zeroed) meshes and view those instead:
+
+```python
+for n in names: pipeline.export_neutral(deca, faces, n)   # writes <name>_neutral.glb each
+```
+
+Copy the `_neutral.glb`s into `viewer/models/` — they all share one canonical orientation, so flipping between them shows pure identity differences. The viewer also keeps your camera angle fixed across model switches (and auto-rotate is off), so the viewpoint stays put while you compare.
+
 ---
 
 ## 5. Known footguns
