@@ -29,7 +29,8 @@ Each step seems like a unique and interesting challenge, and I'd love to know wh
 ## Stage 1 goal (current)
 
 Photo → DECA → FLAME parameters (the "JSON") → 3D mesh → browser viewer.
-No transform yet. Just proving the pipeline.
+**Achieved (2026-05-29, 7/7)** — see "Where I am" below. A manual param-tweak slider
+(`pipeline.tweak`) previews the Stage-2 transform; the automated hash itself is not built yet.
 
 ## Architecture (eventual, 4 stages)
 
@@ -77,8 +78,8 @@ face-hashing/
 - Weights cached in Drive: `deca_model.tar` gdown'd once into `Face-Hashing/cache/` and copied
   locally each session; FLAME `generic_model.pkl` copied from `Face-Hashing/FLAME/FLAME2020/`.
 - Exact cells: `face-hashing-setup.md` §3. Reusable module: `pipeline.py`.
-- Verified in Colab: the in-kernel path produces `.glb` + params (the `flame.faces_tensor`
-  attribute and `flame()` kwargs are confirmed on this DECA build; first image succeeded).
+- Verified in Colab (2026-05-29): the in-kernel path reconstructs all input photos end-to-end
+  to `.glb` + params (7/7); `flame.faces_tensor` and the `flame()` kwargs confirmed on this build.
 - Inputs are downscaled to ≤1024 px (+ EXIF-rotated) before the FAN detector — it otherwise
   runs on the full image and OOMs a free-tier T4 on large phone photos — and GPU memory is freed
   per image. `.jpeg` is handled via an explicit file list (TestData's glob misses it).

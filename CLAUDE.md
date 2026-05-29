@@ -17,7 +17,7 @@ The eventual pipeline is **four stages** (see `face_hashing_research_report.md` 
 
 ## Current state — Stage 1 only
 
-The active milestone is just: **photo → DECA → FLAME params + 3D mesh → browser viewer. No transform.** It proves the photo-to-structured-representation pipeline works.
+The active milestone — **photo → DECA → FLAME params + 3D mesh → browser viewer** — works end-to-end (verified 7/7 in Colab on 2026-05-29). A manual param-tweak slider (`pipeline.tweak`) previews the Stage-2 transform; the automated hash itself is not implemented yet.
 
 `CONTEXT.md` is the authoritative "where am I right now" file — read it first, it reflects the actual working state and supersedes the older guide where they conflict.
 
@@ -69,7 +69,7 @@ The detector also needs `LandmarksType._2D` → `TWO_D` patched in `decalib/data
 
 ## Local-only / license-gated files (git-ignored)
 
-`.gitignore` keeps these out of the repo — keep it that way (there are **no commits yet**, so a first commit is where this matters):
+`.gitignore` keeps these out of the repo — keep it that way:
 
 - `inputs/` — **personal photos** of real people. These now live in the Google Drive alias (`Drive Folder` → `My Drive/Face-Hashing`) and sync to Colab from there; the local `inputs/` is empty.
 - `outputs/` — DECA results (also handed off via the Drive alias; only `outputs/.gitkeep` is tracked).
@@ -84,7 +84,3 @@ Licensing: DECA's pretrained weights are research-only; FLAME 2020 is CC-BY with
 - `face-hashing-setup.md` — the Stage-1 **procedural source of truth**: cell-by-cell notebook (in-kernel, no renderer), Drive caching for fast restarts, footguns. Rewritten 2026-05-29; current.
 - `pipeline.py` — reusable Colab module (`bootstrap` / `load_deca` / `reconstruct` / `tweak`) that the thin notebook imports.
 - `face_hashing_research_report.md` — deep reference on tools/approaches/pricing for all four stages. Consult when designing Stage 2+.
-
-## Known discrepancies to be aware of
-
-- `CONTEXT.md`'s "repo layout" lists `colab/stage1_deca.ipynb` and `README.md`; neither exists yet (the notebook is the `.webloc` link; there is no README). It also still draws `index.html` under `viewer/models/` — it now lives at `viewer/index.html`.

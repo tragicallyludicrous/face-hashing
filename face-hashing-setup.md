@@ -3,6 +3,8 @@
 **Goal of this milestone:** photo → DECA → FLAME parameters (your "JSON object" of facial features) → 3D mesh → drag-rotate it in the browser. Then tweak the parameters and watch the face change (the "Skyrim slider" moment). **No hash transform yet** — Stage 1 just proves we can get from a photo to a structured 3D representation we can play with.
 
 > **This guide was rewritten 2026-05-29** around the *in-kernel, no-renderer* approach. The earlier version told you to install PyTorch3D and JIT-compile DECA's CUDA rasterizer; that path is abandoned (see "Why in-kernel" below). If you find any PyTorch3D / `--rasterizer_type` / `--saveVis` instructions in your notebook, they're from the old flow.
+>
+> **Status (2026-05-29): Stage 1 works end-to-end** — every input photo reconstructs to `.glb` + params on a free-tier T4. The day-to-day way to run it is the **3-cell `pipeline.py` notebook** (§7); the cell-by-cell walkthrough in §3 is the under-the-hood reference for what `pipeline.py` does.
 
 This doc is the **procedural source of truth** for building/modifying the Colab notebook. `CONTEXT.md` is the higher-level "where am I right now" doc; `face_hashing_research_report.md` is the deep tool reference for later stages.
 
@@ -47,7 +49,7 @@ The crucial distinction: **the interactive 3D face you drag in the browser is th
 
 DECA is a 2021 repo targeting Python 3.7–3.10. On current Colab (Python 3.12, Torch 2.x, CUDA 12) the old "install PyTorch3D and compile the rasterizer" path is a tarpit: no matching prebuilt PyTorch3D wheel for the default runtime, and DECA's hand-rolled CUDA rasterizer hardcodes `gcc-7` (absent on Colab). We burned hours there.
 
-The escape: **we never needed the rasterizer.** Our Stage-1 deliverables are the parameter dict (`.npz`/`.mat`) and the mesh (`.glb`), both produced by `encode()` + the FLAME decoder, neither of which touches the rasterizer. The CUDA build only fires from one call (`set_rasterizer('standard')`) inside `DECA.__init__`. We neuter that call and call the FLAME decoder directly.
+The escape: **we never needed the rasterizer.** Our Stage-1 deliverables are the parameter dict (`.npz`) and the mesh (`.glb`), both produced by `encode()` + the FLAME decoder, neither of which touches the rasterizer. The CUDA build only fires from one call (`set_rasterizer('standard')`) inside `DECA.__init__`. We neuter that call and call the FLAME decoder directly.
 
 Running **in-kernel** (in the notebook process, not via `!python …`) buys two more things:
 
@@ -230,13 +232,16 @@ Now you have `name.glb` (original) and `name_tweaked.glb` (mutated identity) in 
 
 ## 4. The viewer (on the Mac)
 
-The page lives at `viewer/index.html`; `.glb` files go in `viewer/models/`. Copy the `.glb`s out of the synced Drive `Output/` into `viewer/models/`, add an `<option>` per model to the `<select>`, then serve over HTTP (`<model-viewer>` won't load `.glb` over `file://`):
+The page lives at `viewer/index.html`; `.glb` files go in `viewer/models/`. The viewer **auto-discovers** every `.glb` in `models/` — it fetches the directory listing `http.server` serves and populates the dropdown — so you just copy files in and reload, no HTML editing.
 
-```bash
-cd viewer && python3 -m http.server 8080   # open http://localhost:8080
-```
+1. Copy `.glb`s out of the synced Drive `Output/<name>/` into `viewer/models/` (e.g. `<name>.glb` and `<name>_tweaked.glb` for an A/B).
+2. Serve over HTTP — `<model-viewer>` won't load `.glb` over `file://`:
+   ```bash
+   cd viewer && python3 -m http.server 8080   # open http://localhost:8080
+   ```
+3. Pick a model from the dropdown and drag to rotate. Entries are sorted, so `<name>` and `<name>_tweaked` sit next to each other for easy comparison.
 
-To compare original vs. tweaked, add both filenames as `<option>`s — the existing `<select>` swaps `viewer.src`.
+Filenames with spaces (e.g. the `hoga …` one) work as-is — the directory listing URL-encodes them. If the dropdown stays empty, you opened the page over `file://` (the listing fetch only works over `http://`) — use the `http.server` command above.
 
 ---
 

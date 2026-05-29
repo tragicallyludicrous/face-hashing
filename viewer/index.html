@@ -16,32 +16,66 @@
     h1 { font-weight: 300; }
     label { display: block; margin: 1rem 0 0.5rem; }
     select { padding: 0.4rem; background: #222; color: #eee; border: 1px solid #444; }
+    #status { color: #888; font-size: 0.85rem; margin-top: 0.5rem; min-height: 1.2em; }
   </style>
 </head>
 <body>
   <main>
     <h1>Face Hashing — Stage 1</h1>
     <label for="model-select">Model:</label>
-    <select id="model-select">
-      <option value="models/alfw2000.glb">alfw2000 (example)</option>
-    </select>
+    <select id="model-select"></select>
     <model-viewer
       id="viewer"
-      src="models/alfw2000.glb"
       camera-controls
       auto-rotate
       auto-rotate-delay="3000"
       shadow-intensity="1"
       exposure="1.1"
-      camera-orbit="0deg 75deg 0.5m"
-      field-of-view="30deg"
+      camera-orbit="0deg 75deg auto"
       alt="Reconstructed 3D face"
     ></model-viewer>
+    <p id="status">Loading model list…</p>
   </main>
   <script>
     const sel = document.getElementById('model-select');
     const viewer = document.getElementById('viewer');
+    const status = document.getElementById('status');
     sel.addEventListener('change', e => { viewer.src = e.target.value; });
+
+    // Auto-discover every .glb in models/ by parsing the directory listing the static server
+    // returns. Works whether the server emits relative ("foo.glb") or absolute
+    // ("/viewer/models/foo.glb") hrefs — we resolve each against the models/ base URL.
+    async function loadModelList() {
+      try {
+        const base = new URL('models/', location.href);   // absolute URL of the models dir
+        const res = await fetch(base);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const hrefs = [...doc.querySelectorAll('a')]
+          .map(a => a.getAttribute('href'))
+          .filter(h => h && h.toLowerCase().endsWith('.glb'))
+          .sort();                                  // keeps <name> and <name>_tweaked adjacent
+        if (!hrefs.length) {
+          status.textContent = 'No .glb files in viewer/models/ — copy one in and reload.';
+          return;
+        }
+        sel.innerHTML = '';
+        for (const href of hrefs) {
+          const opt = document.createElement('option');
+          opt.value = new URL(href, base).href;     // resolves relative OR absolute hrefs correctly
+          const name = decodeURIComponent(href.split('/').pop());  // filename only, for the label
+          opt.textContent = name.replace(/\.glb$/i, '');
+          sel.appendChild(opt);
+        }
+        viewer.src = sel.value;                     // load the first
+        status.textContent = hrefs.length + ' model(s) found.';
+      } catch (err) {
+        status.textContent = 'Could not list models/ (' + err.message +
+          '). Serve over http — `cd viewer && python3 -m http.server 8080` — not file://.';
+      }
+    }
+    loadModelList();
   </script>
 </body>
 </html>
