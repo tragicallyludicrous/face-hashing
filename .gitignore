@@ -19,7 +19,7 @@ Drive Folder
 # Keep local/patch_mica_for_mac.py and local/README.md tracked.
 local/MICA/
 local/in/
-local/out/
+local/out*/
 local/arcface_tmp/
 local/temp.py
 

@@ -178,9 +178,38 @@ one-off runs. MPS is a nice-to-have, not the deliverable.
 - **`torch.cuda.amp.autocast` / device errors** — the demo patch neutralizes autocast and routes
   everything through `_DEVICE`; if you see a stray `.cuda` the regex missed, paste the traceback.
 
-## What's next once this is green
+## The clean way to run — `mica_local.py`
 
-This patched-demo runner is the *proof*. After it works, the clean wrapper from the design doc —
-`mica_embed(image_path) -> 300-d vector` reusing these same model classes in-process (no subprocess,
-no disk round-trip for the arcface blob) — is a straightforward refactor, and becomes Stage 1's local
-entry point alongside `arcface_embed` in `pipeline.py`.
+`demo.py` (§4) is the *verification reference*. For everyday use there's now a clean, in-process
+runner — **`mica_local.py`** — that drives MICA's same detector + network + FLAME decoder without the
+subprocess or the ArcFace-blob disk round-trip `demo.py` does. From `local/`:
+
+```bash
+python mica_local.py -i in -o out                 # CPU -> out/<stem>/{identity.npy, <stem>.glb}
+python mica_local.py -i in -o out --device mps     # or MPS
+```
+
+Or as a library — this is Stage 1's local entry point (Stage 2 enrollment averages several `embed`
+calls per person, per `../stage2-design.md` §4):
+
+```python
+import mica_local as mica
+h   = mica.load(device="cpu")          # build detector + model ONCE
+vec = mica.embed(h, "photo.jpg")       # (300,) identity, or None if no face
+```
+
+It assumes `patch_mica_for_mac.py` has been run against the checkout and the weights are in place
+(§3/§3b). The on-disk source fixes come from the patcher; the runtime shims (CUDA-less autocast,
+CPU-mapped `torch.load`, MPS env, device) are baked into `mica_local.py` itself, so it doesn't need
+`demo.py`'s injected preamble.
+
+**Verify it once against the reference:** run `demo.py` and `mica_local.py` on the same photo and
+compare their `identity.npy` — cosine should be ~1.0 (same model, same preprocessing). After that,
+prefer `mica_local.py`.
+
+## What's next
+
+- Fold `mica_local.embed` into `pipeline.py` alongside `arcface_embed` as Stage 1's identity
+  extractors, and add a MICA row to `consistency_report`.
+- Build the Stage-2 key-file layer on top (`enroll` averages `embed` over a person's photos →
+  `arcface_centroid` + `source_shape`; see `../stage2-design.md` §3–§4).
