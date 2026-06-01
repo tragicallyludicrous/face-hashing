@@ -26,6 +26,9 @@ local/temp.py
 # .glb outputs nested under viewer/models/ (top-level *.glb already covered above)
 viewer/models/**/*.glb
 
+# Generated inspection figures/JSON (derive from personal photos -> keep local)
+tools/figures/
+
 # Junk / Python
 .DS_Store
 __pycache__/
