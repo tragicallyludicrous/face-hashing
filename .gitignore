@@ -29,6 +29,9 @@ viewer/models/**/*.glb
 # Generated inspection figures/JSON (derive from personal photos -> keep local)
 tools/figures/
 
+# FLAME shape basis exported for viewer/sliders.html — registration-gated, non-commercial license
+viewer/flame/
+
 # Junk / Python
 .DS_Store
 __pycache__/

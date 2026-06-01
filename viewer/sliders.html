@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FLAME shape sliders — Face Hashing</title>
+<style>
+  html,body{margin:0;height:100%;background:#111;color:#eee;font-family:system-ui,sans-serif;overflow:hidden}
+  #app{display:flex;height:100vh}
+  #view{flex:1;position:relative}
+  canvas{display:block}
+  #panel{width:300px;padding:14px 16px;background:#181818;box-sizing:border-box;border-left:1px solid #333;display:flex;flex-direction:column}
+  h1{font-weight:300;font-size:1.05rem;margin:.2rem 0 .9rem}
+  .controls{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.6rem}
+  button,.filelbl{background:#262626;color:#eee;border:1px solid #444;border-radius:4px;padding:.4rem .6rem;font-size:.8rem;cursor:pointer}
+  #hash{background:#2d3a52;border-color:#3f5a86}
+  #key{flex:1;min-width:70px;background:#222;color:#eee;border:1px solid #444;border-radius:4px;padding:.3rem .4rem;font-size:.8rem}
+  .row{margin:.3rem 0}
+  .row label{display:flex;justify-content:space-between;font-size:.72rem;color:#bbb}
+  .row input[type=range]{width:100%}
+  #sliders{flex:1;overflow-y:auto;margin:.2rem 0;padding-right:4px}
+  #status{color:#888;font-size:.72rem;margin-top:.5rem;min-height:1.2em}
+  input[type=file]{display:none}
+  hr{border:none;border-top:1px solid #333;margin:.6rem 0}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="view"></div>
+  <div id="panel">
+    <h1>FLAME shape</h1>
+    <div class="controls">
+      <button id="reset">Reset</button>
+      <label class="filelbl">Load identity.npy<input type="file" id="npy" accept=".npy"></label>
+    </div>
+    <div class="controls">
+      <input id="key" type="text" value="hash-v1" title="hash key — change it to swap the hash function">
+      <button id="hash" title="deterministic: same face + same key -> same result">Hash face</button>
+      <button id="rand" title="random face (samples the FLAME shape prior; not deterministic)">Randomize</button>
+    </div>
+    <hr>
+    <div id="sliders"></div>
+    <div id="status">loading basis…</div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const RANGE = 3.0;          // slider extent (± std units) and the transform's clamp
+const status = m => document.getElementById('status').textContent = m;
+
+let nv, nf, K, vtempl, shapedirs, positions, beta, baseBeta, geometry;
+
+async function loadBasis(){
+  const man = await (await fetch('flame/flame_basis.json')).json();
+  const buf = await (await fetch('flame/flame_basis.bin')).arrayBuffer();
+  nv = man.n_verts; nf = man.n_faces; K = man.n_shape;
+  let off = 0;
+  vtempl    = new Float32Array(buf, off, 3*nv);     off += 3*nv*4;
+  shapedirs = new Float32Array(buf, off, K*3*nv);   off += K*3*nv*4;
+  const faces = new Uint32Array(buf, off, 3*nf);
+  positions = new Float32Array(vtempl);             // start at the mean face
+  beta = new Float32Array(K);
+  baseBeta = new Float32Array(K);                   // Reset target: mean until a file is loaded / randomized
+  return faces;
+}
+
+let renderer, scene, camera, controls;
+function initScene(faces){
+  const view = document.getElementById('view');
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(view.clientWidth, view.clientHeight);
+  view.appendChild(renderer.domElement);
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x111111);
+
+  geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(faces, 1));
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(geometry,
+    new THREE.MeshStandardMaterial({color:0xb4b4c8, roughness:0.85, metalness:0.0}));
+  scene.add(mesh);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x333333, 0.9));
+  const d1 = new THREE.DirectionalLight(0xffffff, 0.8); d1.position.set(1,1,2);   scene.add(d1);
+  const d2 = new THREE.DirectionalLight(0xffffff, 0.3); d2.position.set(-1,-1,-1); scene.add(d2);
+
+  geometry.computeBoundingSphere();
+  const bs = geometry.boundingSphere;
+  camera = new THREE.PerspectiveCamera(30, view.clientWidth/view.clientHeight, 0.001, 100);
+  const dist = bs.radius / Math.sin((30*Math.PI/180)/2) * 1.3;
+  camera.position.set(bs.center.x, bs.center.y, bs.center.z + dist);
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.copy(bs.center); controls.update();
+
+  window.addEventListener('resize', ()=>{
+    camera.aspect = view.clientWidth/view.clientHeight; camera.updateProjectionMatrix();
+    renderer.setSize(view.clientWidth, view.clientHeight);
+  });
+  (function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene,camera); })();
+}
+
+// single-slider drag: only the changed component's contribution is added back (cheap)
+function setBeta(i, val){
+  const d = val - beta[i];
+  if(d === 0) return;
+  const base = i*3*nv;
+  for(let j=0; j<3*nv; j++) positions[j] += d*shapedirs[base+j];
+  beta[i] = val;
+  geometry.attributes.position.needsUpdate = true;
+  geometry.computeVertexNormals();
+}
+
+// batch update (hash / randomize / load / reset): rebuild positions once
+function setBetaAll(arr){
+  for(let i=0;i<K;i++) beta[i] = arr[i] || 0;
+  positions.set(vtempl);
+  for(let i=0;i<K;i++){
+    const bi = beta[i]; if(bi === 0) continue;
+    const base = i*3*nv;
+    for(let j=0;j<3*nv;j++) positions[j] += bi*shapedirs[base+j];
+  }
+  geometry.attributes.position.needsUpdate = true;
+  geometry.computeVertexNormals();
+  syncSliders();
+}
+
+function buildSliders(){
+  const box = document.getElementById('sliders'); box.innerHTML='';
+  for(let i=0; i<K; i++){
+    const row = document.createElement('div'); row.className='row';
+    const lab = document.createElement('label');
+    const name = document.createElement('span'); name.textContent = 'shape '+i;
+    const val  = document.createElement('span'); val.textContent = '0.00';
+    lab.append(name, val);
+    const s = document.createElement('input');
+    s.type='range'; s.min=-100; s.max=100; s.value=0; s.dataset.i = i;
+    s.oninput = ()=>{ const v = s.value/100*RANGE; val.textContent = v.toFixed(2); setBeta(i, v); };
+    row.append(lab, s); box.append(row);
+  }
+}
+
+function syncSliders(){
+  document.querySelectorAll('#sliders input[type=range]').forEach(s=>{
+    const v = beta[+s.dataset.i];
+    s.value = Math.max(-100, Math.min(100, v/RANGE*100));
+    s.parentElement.querySelector('label span:last-child').textContent = v.toFixed(2);
+  });
+}
+
+// ---------- the "hash": a deterministic, key-seeded transform of the shape vector ----------
+// flame_shape_offset_v1 — same face + same key => same output, clamped to the face manifold.
+// (Mirror this exactly in pipeline.py to make the viewer and the pipeline agree.)
+function fnv1a(s){ let h=0x811c9dc5; for(let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h,0x01000193); } return h>>>0; }
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function gaussFrom(rng){ let u=0,v=0; while(u===0)u=rng(); while(v===0)v=rng(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+
+function transform(b, key, strength=0.8){
+  const rng = mulberry32(fnv1a(key));
+  const out = new Float32Array(b.length);
+  for(let i=0;i<b.length;i++)
+    out[i] = Math.max(-RANGE, Math.min(RANGE, b[i] + gaussFrom(rng)*strength));
+  return out;
+}
+
+function applyHash(){
+  const key = document.getElementById('key').value;
+  setBetaAll(transform(beta, key));
+  status(`hashed with key "${key}" — deterministic (reload + Hash = identical)`);
+}
+
+function randomize(){
+  const arr = new Float32Array(K);
+  const m = Math.min(K, 100);                        // dominant identity PCs -> a plausible, in-frame face
+  for(let i=0;i<m;i++){ let u=0,v=0; while(u===0)u=Math.random(); while(v===0)v=Math.random();
+    arr[i] = Math.max(-RANGE, Math.min(RANGE, Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v))); }
+  setBetaAll(arr);                                   // NOTE: does NOT change the Reset base — Reset still returns to your loaded face
+  status('random face (not deterministic; Reset returns to your loaded face)');
+}
+
+function reset(){ setBetaAll(baseBeta); status('reset to the base face (loaded / randomized, else mean)'); }
+
+// ---------- load a MICA identity.npy ----------
+function parseNpy(buf){
+  const b = new Uint8Array(buf);
+  let hlen, hstart;
+  if(b[6] === 1){ hlen = b[8] | (b[9]<<8); hstart = 10; }
+  else { hlen = b[8] | (b[9]<<8) | (b[10]<<16) | (b[11]<<24); hstart = 12; }
+  const header = new TextDecoder().decode(b.slice(hstart, hstart+hlen));
+  const descr = /'descr':\s*'([^']+)'/.exec(header)[1];
+  const data = buf.slice(hstart + hlen);                 // copy from data start (alignment-safe)
+  if(descr.includes('f4')) return new Float32Array(data);
+  if(descr.includes('f8')) return new Float64Array(data);
+  throw new Error('unsupported npy dtype '+descr);
+}
+
+async function loadIdentity(file){
+  try{
+    const vec = parseNpy(await file.arrayBuffer());
+    const n = Math.min(vec.length, K);
+    const arr = new Float32Array(K);
+    for(let i=0;i<n;i++) arr[i] = vec[i];
+    setBetaAll(arr);
+    baseBeta = arr.slice();                         // this loaded face is now the Reset target
+    status(`seeded ${n} shape coeffs from ${file.name} — now Hash it`);
+  }catch(e){ status('npy load failed: '+e.message); }
+}
+
+(async function main(){
+  try{
+    initScene(await loadBasis());
+    buildSliders();
+    status(`${nv} verts · ${K} shape PCs · all ${K} sliders (scroll)`);
+  }catch(e){
+    status('failed to load basis — run tools/export_flame_basis.py and serve over http (not file://): '+e.message);
+  }
+})();
+
+document.getElementById('reset').onclick = reset;
+document.getElementById('hash').onclick  = applyHash;
+document.getElementById('rand').onclick  = randomize;
+document.getElementById('npy').onchange  = e => { const f = e.target.files[0]; if(f){ loadIdentity(f); e.target.value=''; } };
+</script>
+</body>
+</html>

@@ -62,16 +62,86 @@ def _get_faces(mica):
     return None
 
 
+def _get_flame(mica):
+    """The FLAME decoder module inside the loaded MICA model (attribute path varies by revision)."""
+    for path in ("flameModel.generator", "flameModel.flame", "flame"):
+        obj = mica
+        try:
+            for part in path.split("."):
+                obj = getattr(obj, part)
+            if hasattr(obj, "faces_tensor"):
+                return obj
+        except AttributeError:
+            continue
+    raise AttributeError("could not locate the FLAME decoder on the MICA model")
+
+
+def _faces_list(data):
+    """Pull the list of face objects out of loupe's `landmarks --json`, schema-tolerantly."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        if "left_eye" in data:                             # a single face object at top level
+            return [data]
+        for k in ("landmarks", "faces", "results", "data"):
+            if isinstance(data.get(k), list):
+                return data[k]
+        for v in data.values():                            # fallback: any list of face-like dicts
+            if isinstance(v, list) and v and isinstance(v[0], dict) and "left_eye" in v[0]:
+                return v
+    return []
+
+
+def _detect_vision(image_path, shape):
+    """macOS Vision (via the `loupe` CLI) -> (bbox[x1,y1,x2,y2], kps[5,2]) in pixels, or None.
+
+    loupe emits NORMALIZED, top-left-origin coords (it already flips Vision's bottom-left Y), regions
+    left_eye/right_eye/nose/outer_lips/... as lists of {x,y}. We build ArcFace's 5-point kps and
+    disambiguate left/right by IMAGE x, so Vision's anatomical naming can't mirror the crop.
+    """
+    import json
+    import subprocess
+    import numpy as np
+
+    r = subprocess.run(["loupe", "landmarks", "--json", image_path], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"loupe failed: {r.stderr.strip() or r.stdout.strip()}")
+    faces = _faces_list(json.loads(r.stdout))
+    if not faces:
+        return None
+    if not all(k in faces[0] for k in ("box", "left_eye", "right_eye", "nose", "outer_lips")):
+        raise RuntimeError("unexpected loupe landmarks JSON; got keys "
+                           f"{list(faces[0].keys())} — paste `loupe landmarks --json <photo>` to fix the parser")
+
+    H, W = shape[0], shape[1]
+    pts = lambda region: np.array([[p["x"], p["y"]] for p in region], dtype=np.float64)
+    bc = lambda f: np.array([f["box"]["x"] + f["box"]["width"]/2, f["box"]["y"] + f["box"]["height"]/2])
+    f = min(faces, key=lambda f: float(np.hypot(*(bc(f) - 0.5))))   # most central face
+
+    eyes = sorted([pts(f["left_eye"]).mean(0), pts(f["right_eye"]).mean(0)], key=lambda p: p[0])
+    lips = pts(f["outer_lips"])
+    kps = np.array([eyes[0], eyes[1], pts(f["nose"]).mean(0),
+                    lips[lips[:, 0].argmin()], lips[lips[:, 0].argmax()]], dtype=np.float32)
+    kps[:, 0] *= W; kps[:, 1] *= H                                  # normalized -> pixels
+
+    b = f["box"]
+    bbox = np.array([b["x"]*W, b["y"]*H, (b["x"]+b["width"])*W, (b["y"]+b["height"])*H], dtype=np.float32)
+    return bbox, kps
+
+
 class Handle:
     """Loaded detector + model + FLAME faces, ready for embed()/reconstruct()."""
-    def __init__(self, mica, app, faces, device):
-        self.mica, self.app, self.faces, self.device = mica, app, faces, device
+    def __init__(self, mica, app, faces, device, detector="antelopev2"):
+        self.mica, self.app, self.faces = mica, app, faces
+        self.device, self.detector = device, detector
 
 
-def load(device="cpu"):
-    """Build the RetinaFace detector and the MICA model once. Returns a Handle.
+def load(device="cpu", detector="antelopev2"):
+    """Build the face detector + MICA model once. Returns a Handle.
 
-    device: "cpu" (default, verified faithful), "mps", or "auto" (mps-if-available).
+    device:   "cpu" (default, verified faithful), "mps", or "auto" (mps-if-available).
+    detector: "antelopev2" (InsightFace, default) | "vision" (macOS Vision via the `loupe` CLI —
+              drops the 360 MB antelopev2 pack; needs `brew install georgemandis/tap/loupe`).
     """
     device = _pick_device(device)
     if not os.path.isdir(MICA_DIR):
@@ -85,15 +155,26 @@ def load(device="cpu"):
             raise FileNotFoundError(f"missing weight file: {f} (see local/README.md §3)")
 
     from configs.config import get_cfg_defaults
-    from utils.landmark_detector import LandmarksDetector, detectors
     from micalib.models.mica import MICA
 
+    app = None
+    if detector == "antelopev2":
+        from utils.landmark_detector import LandmarksDetector, detectors
+        app = LandmarksDetector(model=detectors.RETINAFACE)
+    elif detector == "vision":
+        import shutil
+        if shutil.which("loupe") is None:
+            raise RuntimeError("--detector vision needs the loupe CLI: brew install georgemandis/tap/loupe")
+    elif detector == "none":
+        pass                                       # FLAME-decode only (e.g. compose_mesh); no detection
+    else:
+        raise ValueError(f"unknown detector {detector!r} (use 'antelopev2', 'vision', or 'none')")
+
     cfg = get_cfg_defaults()                       # cfg.mica_dir auto-resolves to MICA_DIR
-    app = LandmarksDetector(model=detectors.RETINAFACE)
     mica = MICA(cfg, device)                       # __init__ -> load_model() loads data/pretrained/mica.tar
     mica.eval()
     mica.testing = True                            # skip decode()'s training-only `codedict['flame']` GT block
-    return Handle(mica, app, _get_faces(mica), device)
+    return Handle(mica, app, _get_faces(mica), device, detector)
 
 
 def _run(h, image_path):
@@ -107,18 +188,28 @@ def _run(h, image_path):
     """
     import cv2
     from insightface.app.common import Face
-    from datasets.creation.util import get_arcface_input, get_center
+    from datasets.creation.util import get_arcface_input
 
     img = cv2.imread(image_path)
     if img is None:
         return None
-    bboxes, kpss = h.app.detect(img)
-    if bboxes is None or len(bboxes) == 0:
-        return None
-    i = get_center(bboxes, img)                    # the most central face
-    kps = kpss[i] if kpss is not None else None
-    face = Face(bbox=bboxes[i, 0:4], kps=kps, det_score=bboxes[i, 4])
-    blob, aimg = get_arcface_input(face, img)      # blob: (3,112,112) float32, ArcFace-normalized
+
+    if h.detector == "vision":
+        det = _detect_vision(image_path, img.shape)        # macOS Vision via the loupe CLI
+        if det is None:
+            return None
+        bbox, kps = det
+        face = Face(bbox=bbox, kps=kps, det_score=1.0)
+    else:                                                  # antelopev2 (InsightFace)
+        from datasets.creation.util import get_center
+        bboxes, kpss = h.app.detect(img)
+        if bboxes is None or len(bboxes) == 0:
+            return None
+        i = get_center(bboxes, img)                        # the most central face
+        kps = kpss[i] if kpss is not None else None
+        face = Face(bbox=bboxes[i, 0:4], kps=kps, det_score=bboxes[i, 4])
+
+    blob, aimg = get_arcface_input(face, img)              # blob: (3,112,112) float32, ArcFace-normalized
 
     dev = h.device
     arcface = torch.tensor(blob).float().to(dev)[None]                         # (1,3,112,112)
@@ -180,6 +271,32 @@ def reconstruct(h, in_dir, out_dir, exts=(".jpg", ".jpeg", ".png", ".bmp", ".web
     return done
 
 
+def compose_mesh(h, identity, deca_npz, out_glb, color=(200, 180, 180, 255)):
+    """flame(shape=MICA identity, exp+pose=DECA) -> .glb — the MICA identity wearing the photo's expression/pose.
+
+    identity: a MICA identity.npy path (300-d FLAME shape; raw or hashed), or a numpy array.
+    deca_npz: a DECA <stem>_params.npz path (uses its 'exp' and 'pose' groups).
+
+    Identity comes from MICA (consistent), expression+pose from the ORIGINAL photo (DECA) — both decode
+    through the same FLAME 2020 basis. SMIRK/EMOCA can later supply better exp/pose: same call, same basis.
+    """
+    import numpy as np
+    flame = _get_flame(h.mica)
+    n_exp = int(flame.shapedirs.shape[2]) - 300            # shapedirs = [300 shape | n_exp expression]
+    fit = lambda v, n: np.pad(np.asarray(v, np.float32).ravel(), (0, n))[:n]   # zero-pad / truncate to n
+
+    shape = identity if isinstance(identity, np.ndarray) else np.load(identity)
+    d = np.load(deca_npz)
+    S = torch.tensor(fit(shape, 300))[None].float().to(h.device)
+    E = torch.tensor(fit(d["exp"], n_exp))[None].float().to(h.device)
+    P = torch.tensor(fit(d["pose"], 6))[None].float().to(h.device)
+    with torch.no_grad():
+        verts = flame(shape_params=S, expression_params=E, pose_params=P)[0]   # (1, 5023, 3), meters
+    _export_glb(verts[0].detach().cpu().numpy(), h.faces, out_glb, color=color)
+    print("composed", out_glb, "(MICA shape + DECA exp/pose)")
+    return out_glb
+
+
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="MICA Stage 1 (local, in-process).")
@@ -187,8 +304,10 @@ if __name__ == "__main__":
     p.add_argument("-o", "--out_dir", required=True, help="output folder")
     p.add_argument("--device", default=os.environ.get("MICA_DEVICE", "cpu"),
                    help="cpu (default) | mps | auto")
+    p.add_argument("--detector", default="antelopev2", choices=["antelopev2", "vision"],
+                   help="antelopev2 (InsightFace, default) | vision (macOS, via loupe)")
     a = p.parse_args()
-    h = load(device=a.device)
-    print(f"MICA loaded on {h.device}; reconstructing {a.in_dir} -> {a.out_dir}")
+    h = load(device=a.device, detector=a.detector)
+    print(f"MICA loaded on {h.device} (detector: {h.detector}); reconstructing {a.in_dir} -> {a.out_dir}")
     names = reconstruct(h, a.in_dir, a.out_dir)
     print(f"done: {len(names)} face(s)")

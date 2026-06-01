@@ -200,6 +200,28 @@ hash_face(image_path, key=None, passphrase=None)  # key present -> Mode A, else 
 
 ---
 
+## Stage 3 — reconstruct: pose the hashed identity (MICA shape + DECA/SMIRK expression)
+
+Reconstruction feeds three FLAME parameter groups, from two sources, into one decoder:
+
+```
+flame(shape = hashed MICA identity,      # WHO  — from the hash (consistent, mutated)
+      exp   = DECA/SMIRK expression,      # HOW  — estimated from the ORIGINAL photo
+      pose  = DECA/SMIRK head + jaw pose)  ->  a posed, emoting mesh of the NEW identity
+```
+
+MICA outputs only neutral *shape* (that's its strength — pose/expression-invariant identity), so
+expression and pose come from a per-image estimator run on the original photo. They share the FLAME
+2020 basis, so they drop straight into the same decoder (MICA shape is 300-d, DECA exp 50-d → fit to
+the model's expression dims, pose 6-d = global + jaw). The result is the *new* face wearing the
+*original's* expression and head angle — which is exactly what Stage 4 conditions on (rendered to
+depth/normals/landmarks) so the swapped face sits naturally back in the photo. **Pose and expression
+are therefore not discarded — they're sourced from the photo, not the hash.**
+
+DECA works today; **SMIRK (CVPR'24, MIT) / EMOCA** give better expressions later — same call, same
+basis, just a better exp/pose source. Prototyped by `local/mica_local.compose_mesh` /
+`local/compose_flame.py`.
+
 ## 6. Determinism guarantees & failure modes
 
 - **Mode A: exact.** Identity is decrypted, not recomputed; two photos of the same person yield
