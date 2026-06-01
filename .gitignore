@@ -15,6 +15,17 @@ Drive Folder
 # Claude Code local settings
 .claude/settings.local.json
 
+# Local Mac-native MICA runner — generated (the MICA clone, run I/O, scratch).
+# Keep local/patch_mica_for_mac.py and local/README.md tracked.
+local/MICA/
+local/in/
+local/out/
+local/arcface_tmp/
+local/temp.py
+
+# .glb outputs nested under viewer/models/ (top-level *.glb already covered above)
+viewer/models/**/*.glb
+
 # Junk / Python
 .DS_Store
 __pycache__/

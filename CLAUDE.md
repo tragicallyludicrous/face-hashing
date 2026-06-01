@@ -84,3 +84,4 @@ Licensing: DECA's pretrained weights are research-only; FLAME 2020 is CC-BY with
 - `face-hashing-setup.md` — the Stage-1 **procedural source of truth**: cell-by-cell notebook (in-kernel, no renderer), Drive caching for fast restarts, footguns. Rewritten 2026-05-29; current.
 - `pipeline.py` — reusable Colab module (`bootstrap` / `load_deca` / `reconstruct` / `tweak`) that the thin notebook imports.
 - `face_hashing_research_report.md` — deep reference on tools/approaches/pricing for all four stages. Consult when designing Stage 2+.
+- `stage2-design.md` — the **Stage-2 plan**: the encrypted per-user identity key file, the two run modes (recurring vs one-off), enrollment, the keyed transform registry, and the local-first deployment topology (Stages 1–3 on the Mac, only diffusion behind a GPU API). Design, not yet built.

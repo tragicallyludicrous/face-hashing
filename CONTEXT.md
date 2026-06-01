@@ -53,7 +53,11 @@ face-hashing/
 ├── CONTEXT.md                      # this file — current truth
 ├── face-hashing-setup.md           # Stage-1 procedural guide (cells + Drive caching)
 ├── face_hashing_research_report.md # deep tool reference for Stages 2–4
+├── stage2-design.md                # Stage-2 plan: identity key file, two modes, local-first topology
 ├── pipeline.py                     # reusable Colab module (bootstrap/load_deca/reconstruct/tweak)
+├── local/                          # Mac-native MICA Stage 1 (no Colab): patcher + runbook
+│   ├── patch_mica_for_mac.py       # makes a MICA checkout run its demo on CPU/MPS (idempotent)
+│   └── README.md                   # the local runbook (verified 2026-06-01)
 ├── colab/
 │   └── DECA.ipynb - Colab.webloc   # link to the live Colab notebook (no .ipynb in repo yet)
 ├── outputs/.gitkeep                # results handed off via Drive; not committed
@@ -83,6 +87,23 @@ face-hashing/
 - Inputs are downscaled to ≤1024 px (+ EXIF-rotated) before the FAN detector — it otherwise
   runs on the full image and OOMs a free-tier T4 on large phone photos — and GPU memory is freed
   per image. `.jpeg` is handled via an explicit file list (TestData's glob misses it).
+
+## Update (2026-06-01): MICA + local-first verified
+
+- **Stage-1 identity extraction pivoted toward MICA.** DECA `shape` drifts photo-to-photo (it's a
+  reconstruction objective, not an identity one); MICA returns a pose/expression-invariant FLAME
+  *identity* (300-d) — what the hash actually needs. Measured on a small set (`consistency_report` +
+  the MICA notebook): ArcFace AUC 1.00 (recognition ceiling) > MICA 0.94 > DECA 0.86 — MICA sits just
+  under the ceiling.
+- **MICA Stage 1 now runs natively on the Mac (no Colab, no GPU).** Its inference path is
+  PyTorch3D-free, so there's no renderer to build — just CPU-safety + the chumpy/numpy/face_alignment
+  patches. CPU output matches Colab at **cosine 1.0** on the same photo; MPS works too. Runner +
+  runbook: `local/patch_mica_for_mac.py`, `local/README.md`.
+- **Stage-2 architecture drafted** in `stage2-design.md`: an encrypted per-user identity key file,
+  two run modes (recurring vs one-off), a keyed transform registry, and a local-first topology
+  (Stages 1–3 on the Mac, only the diffusion step behind a GPU API).
+- **Next:** wrap the patched-demo flow into a clean in-process `mica_embed(image_path) -> 300-d` as
+  Stage 1's local entry point (no subprocess, no arcface-blob disk round-trip).
 
 ## Key decision (2026-05-29): in-kernel, no renderer, keep DECA
 
@@ -179,3 +200,4 @@ for a, r in [('bool',bool),('int',int),('float',float),('complex',complex),
 - `face-hashing-setup.md` — the current Stage-1 procedural source of truth (cells + caching).
 - `pipeline.py` — reusable module (`bootstrap` / `load_deca` / `reconstruct` / `tweak`).
 - `face_hashing_research_report.md` — deep tool reference for Stages 2–4.
+- `stage2-design.md` — Stage-2 plan: encrypted identity key file, two modes, keyed transform, local-first topology.
