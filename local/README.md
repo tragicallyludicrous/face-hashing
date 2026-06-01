@@ -185,9 +185,13 @@ runner — **`mica_local.py`** — that drives MICA's same detector + network + 
 subprocess or the ArcFace-blob disk round-trip `demo.py` does. From `local/`:
 
 ```bash
-python mica_local.py -i in -o out                 # CPU -> out/<stem>/{identity.npy, <stem>.glb}
+python mica_local.py -i in -o out                 # CPU -> out/<stem>/{identity.npy, arcface.npy, <stem>.glb}
 python mica_local.py -i in -o out --device mps     # or MPS
 ```
+
+`identity.npy` is the 300-d FLAME identity (the hash payload); `arcface.npy` is the 512-d ArcFace
+embedding MICA consumes (the recognition "ceiling"). Inspect either with
+`python ../tools/present.py --compare --source mica|arcface`.
 
 Or as a library — this is Stage 1's local entry point (Stage 2 enrollment averages several `embed`
 calls per person, per `../stage2-design.md` §4):

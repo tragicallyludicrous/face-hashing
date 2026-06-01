@@ -31,6 +31,36 @@ verification**, which is a far easier, collision-free, trivially-scalable proble
 
 ---
 
+## The two identity vectors — ArcFace (512-d) vs MICA shape (300-d)
+
+Stage 1 produces *two* identity vectors per photo, and the key file (§3) stores both because they
+do different jobs. MICA's pipeline is:
+
+```
+image ─▶ [ frozen pretrained ArcFace encoder ] ─▶ 512-d embedding ─▶ [ learned mapping net ] ─▶ 300-d FLAME shape ─▶ mesh
+              (a real recognition model)              = arcface.npy        (lossy projection)        = identity.npy
+```
+
+- **ArcFace embedding (512-d, `arcface.npy`)** — the output of MICA's *frozen, standard* ArcFace
+  face-recognition encoder ("ArcFace" = the angular-margin recognition loss). Raw identity signal,
+  trained purely to separate people; same-person photos cluster tightly, different people sit far
+  apart — the **consistency ceiling**. Not interpretable geometry, just a vector on a hypersphere.
+  → the **matching / verify key** (`arcface_centroid`).
+- **MICA shape (300-d, `identity.npy`)** — that embedding pushed through MICA's learned mapping into
+  FLAME *shape* space. **Downstream and lossy**: keeps only identity expressible as coarse 3D
+  geometry (drops texture/fine detail), and is trained to fit 3D scans, not to discriminate people —
+  so its clusters are looser than ArcFace's (the ~0.94 vs ~1.00 AUC gap). But it *is* interpretable,
+  decodable geometry. → the **payload / what the face looks like** (`source_shape`).
+
+So MICA is **not** an imperfect ArcFace — it *contains* a complete, frozen ArcFace and bolts a
+shape-regression head onto it. Neither vector is deterministic on its own: both are continuous
+functions of the pixels, so a person's photos form a tight *cluster*, never a single point.
+Determinism is **added on top** (enrollment averaging → the key file collapses each cluster to one
+canonical value). Tighter clusters just make that collapse safer — which is exactly why ArcFace is
+the better *key* and MICA the better *payload*.
+
+---
+
 ## 2. Two modes
 
 The presence or absence of a key file selects the behavior — same pipeline, two entry points.

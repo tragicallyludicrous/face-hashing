@@ -5,7 +5,8 @@ disk round-trip for the ArcFace blob (which is what `demo.py` does via its `-a` 
     import mica_local as mica
     m   = mica.load(device="cpu")          # build detector + model ONCE
     vec = mica.embed(m, "photo.jpg")       # -> (300,) MICA identity, or None if no face
-    mica.reconstruct(m, "in", "out")       # batch -> out/<stem>/{identity.npy, <stem>.glb}
+    arc = mica.arcface_embed(m, "photo.jpg")  # -> (512,) ArcFace embedding (the recognition 'ceiling')
+    mica.reconstruct(m, "in", "out")       # batch -> out/<stem>/{identity.npy, arcface.npy, <stem>.glb}
 
 This reuses MICA's OWN code (detector, ArcFace preprocessing, network, FLAME decoder) — it just
 drives it in-process with a clean API instead of the `demo.py` two-pass disk flow. It assumes you
@@ -95,11 +96,14 @@ def load(device="cpu"):
     return Handle(mica, app, _get_faces(mica), device)
 
 
-def embed(h, image_path, with_mesh=False):
-    """Photo -> 300-d MICA identity (numpy float32). None if no face detected.
+def _run(h, image_path):
+    """Detect -> crop -> encode -> decode once.
 
-    with_mesh=True also returns the neutral FLAME vertices: returns (code, verts).
-    Identity depends only on the ArcFace crop; the 224px tensor MICA stores is unused for the code.
+    Returns {'code': (300,) MICA identity, 'verts': (5023,3) neutral mesh,
+             'arcface': (512,) L2-normalized ArcFace embedding}, or None if no face.
+    The 512-d ArcFace vector is the identity signal MICA consumes BEFORE the FLAME-shape
+    bottleneck — the recognition 'ceiling'. Identity (code) depends only on it; the 224px
+    `images` tensor MICA stores is unused for the embedding.
     """
     import cv2
     from insightface.app.common import Face
@@ -119,16 +123,30 @@ def embed(h, image_path, with_mesh=False):
     dev = h.device
     arcface = torch.tensor(blob).float().to(dev)[None]                         # (1,3,112,112)
     images = cv2.resize(aimg, (224, 224)).transpose(2, 0, 1) / 255.0
-    images = torch.tensor(images).float().to(dev)[None]                        # (1,3,224,224); stored, unused for ID
+    images = torch.tensor(images).float().to(dev)[None]                        # (1,3,224,224); unused for ID
 
     with torch.no_grad():
         codedict = h.mica.encode(images, arcface)
         opdict = h.mica.decode(codedict)
-    code = opdict["pred_shape_code"][0].detach().cpu().numpy().astype(np.float32)   # (300,)
-    if not with_mesh:
-        return code
-    verts = opdict["pred_canonical_shape_vertices"][0].detach().cpu().numpy()
-    return code, verts
+    return {
+        "code": opdict["pred_shape_code"][0].detach().cpu().numpy().astype(np.float32),       # (300,)
+        "verts": opdict["pred_canonical_shape_vertices"][0].detach().cpu().numpy(),           # (5023,3)
+        "arcface": codedict["arcface"][0].detach().cpu().numpy().astype(np.float32),          # (512,) L2-norm
+    }
+
+
+def embed(h, image_path, with_mesh=False):
+    """Photo -> 300-d MICA identity (numpy float32). None if no face. with_mesh=True -> (code, verts)."""
+    r = _run(h, image_path)
+    if r is None:
+        return None
+    return (r["code"], r["verts"]) if with_mesh else r["code"]
+
+
+def arcface_embed(h, image_path):
+    """Photo -> 512-d ArcFace recognition embedding (MICA's backbone, L2-normalized). None if no face."""
+    r = _run(h, image_path)
+    return None if r is None else r["arcface"]
 
 
 def _export_glb(verts, faces, path, color=(180, 200, 180, 255)):
@@ -140,25 +158,24 @@ def _export_glb(verts, faces, path, color=(180, 200, 180, 255)):
 
 
 def reconstruct(h, in_dir, out_dir, exts=(".jpg", ".jpeg", ".png", ".bmp", ".webp")):
-    """Every photo in in_dir -> out_dir/<stem>/{identity.npy, <stem>.glb}. Returns the stems done."""
+    """Every photo in in_dir -> out_dir/<stem>/{identity.npy, arcface.npy, <stem>.glb}. Returns the stems."""
     done = []
     for f in sorted(os.listdir(in_dir)):
         stem, ext = os.path.splitext(f)
         if ext.lower() not in exts:
             continue
-        out = embed(h, os.path.join(in_dir, f), with_mesh=h.faces is not None)
-        if out is None:
+        r = _run(h, os.path.join(in_dir, f))
+        if r is None:
             print(f"  {stem}: no face detected — skipped")
             continue
         d = os.path.join(out_dir, stem)
         os.makedirs(d, exist_ok=True)
+        np.save(os.path.join(d, "identity.npy"), r["code"])
+        np.save(os.path.join(d, "arcface.npy"), r["arcface"])
         if h.faces is not None:
-            code, verts = out
-            _export_glb(verts, h.faces, os.path.join(d, f"{stem}.glb"))
-        else:
-            code = out
-        np.save(os.path.join(d, "identity.npy"), code)
-        print(f"  {stem}: identity {code.shape}" + ("" if h.faces is None else f" + {stem}.glb"))
+            _export_glb(r["verts"], h.faces, os.path.join(d, f"{stem}.glb"))
+        print(f"  {stem}: identity{r['code'].shape} + arcface{r['arcface'].shape}"
+              + ("" if h.faces is None else f" + {stem}.glb"))
         done.append(stem)
     return done
 
