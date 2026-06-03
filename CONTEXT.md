@@ -2,48 +2,45 @@
 
 ## What I'm building
 
-See below a lightly-modified version of the original deep-research prompt:
+Face Hashing is a personal, exploratory project.
 
-I want to build a personal-project program for exploratory/creative purposes. I call it Face Hashing, and here's the long and short of it:
+- **In:** a photograph of a person (eventually video / multiple people).
+- **Out:** the same photograph, but the person's face is different — and *deterministically* so: the same input face always yields the same output face. Under the hood the transform should behave like a hash (deterministic, ideally one-way — in practice *obfuscation*, not encryption).
 
-In: a photograph (eventually video, but let's start with stills) of a person (eventually multiple people).
-Out: the same photograph, but the person's face is different.
+The original four-stage picture:
 
-Here's the twist: the out face should always be the same face given the same input face. Under the hood, the transform should be, as any good hash:
+1. A face model extracts what makes a face unique (the "facial features as JSON").
+2. A math transform mutates those values (not their structure) into a *different* face — a hot-swappable "hash function".
+3. Reconstruct a rough mesh from the transformed values (a Skyrim-character-creator-like draft).
+4. A diffusion model makes it photoreal and composites it back into the original image.
 
-Deterministic
-One-way
+## Where I am right now (current: 2026-06)
 
-Here's one way I picture it working, with a limited knowledge of the tools involved:
+**Stages 1 & 3 run end-to-end, locally on the Mac** (Apple Silicon, no GPU, no Colab). One command:
 
-1. Some sort of facial recognition algorithm (perhaps the kind that can identify a specific face in, say, Apple Photos or the like) outputs the specifics of what makes that face unique. Pupillary distance, jaw shape, whatnot. In my brain this outputs as a JSON object or something.
+```bash
+cd local && python run.py -i in -o out      # out/<stem>/{arcface.npy, composed.glb}
+```
 
-2. Some sort of mathematical transform that changes that object's values (but not structure) such that they would represent the output of a different face. Ideally we could hotswap this 'hash function' as the project mutates.
+- **Stage 1 — identity (MICA).** Photo → frozen ArcFace 512-d embedding → MICA → 300-d FLAME *shape* (identity). `arcface.npy` is the recognition vector (the Stage-2 key); the 300-d shape drives the mesh. Identity consistency on a small set: ArcFace AUC ~1.0 (ceiling) > MICA ~0.94 > DECA ~0.86 — MICA sits just under the ceiling, which is why it replaced DECA for identity.
+- **Stage 3 — reconstruct (SMIRK).** SMIRK reads the photo's expression/pose/jaw/eyelids; we swap MICA's shape into SMIRK's FLAME and decode → `composed.glb`: the identity wearing the photo's expression. SMIRK (CVPR'24, MIT) replaced DECA here for much better expressions.
+- **Stage 2 — the hash — is NOT built.** Today `composed.glb` uses the *raw* MICA shape (a faithful reconstruction). Stage 2 will mutate that 300-d shape vector before compose. `viewer/sliders.html` previews this: 300 live FLAME shape sliders + a deterministic, key-seeded "hash" offset.
+- **Stage 4 — photoreal + composite — is NOT built.** The only stage that may need a GPU (diffusion behind an API); everything else is local.
 
-3. Some way to turn this object into the rough draft version of the face. I picture something like the Skyrim character generator, but as granular as the data it receives.
+## Architecture (local, renderer-free)
 
-4. A diffusion model to make this face photorealistic and composite it back into the original image.
+The key insight: MICA / SMIRK / DECA inference paths are **PyTorch3D-free** — only their *Renderers* need it. So we import each model's encoder + FLAME decoder, skip the Renderer, and there's nothing to build on macOS.
 
-Each step seems like a unique and interesting challenge, and I'd love to know what libraries, approaches, etc I should dig into in order to make this possible. Also open to other approaches (I imagine simply generating a seed from the facial-recognition algo, transforming that, and putting it into a comfyUI workflow might get up and running faster but it doesn't sound as interesting), though this one seems very interesting on many technical levels that I'd like to dig into.
-
-## Stage 1 goal (current)
-
-Photo → DECA → FLAME parameters (the "JSON") → 3D mesh → browser viewer.
-**Achieved (2026-05-29, 7/7)** — see "Where I am" below. A manual param-tweak slider
-(`pipeline.tweak`) previews the Stage-2 transform; the automated hash itself is not built yet.
-
-## Architecture (eventual, 4 stages)
-
-1. Face → structured representation (FLAME params via DECA)
-2. Deterministic transform on those params (the "hash function", hot-swappable)
-3. Reconstruct a rough face from transformed params
-4. Diffusion model for photorealism + composite back into original image
-
-## Environment
-
-- macOS Apple Silicon, no NVIDIA GPU
-- Running DECA in Google Colab (T4 free tier) to avoid PyTorch3D install pain on Mac
-- Viewer is local: HTML + <model-viewer> served via `python3 -m http.server`
+- `local/run.py` — the one command. MICA and SMIRK are separate upstream repos that **both** ship top-level `utils`/`configs`/`datasets` packages, so they can't co-exist in one interpreter; `run.py` runs each as a subprocess, drops intermediates in a temp dir, and assembles `out/<stem>/{arcface.npy, composed.glb}`.
+- `local/mica_local.py` — MICA: `load` → `embed` / `arcface_embed` / `reconstruct` / `compose_mesh`. CPU matches the original Colab demo at cosine 1.0.
+- `local/smirk_local.py` — SMIRK: `load` → `params` / `compose` / `reconstruct`. Mediapipe detector with an antelopev2/RetinaFace fallback for faces mediapipe misses.
+- `local/compose_flame.py` — alternate compose (MICA shape + DECA params); legacy, kept for when DECA params exist.
+- `local/patch_mica_for_mac.py` — idempotent MICA-on-Mac patcher.
+- `local/README.md` — the runbook.
+- `tools/present.py` — inspect/visualize identity + arcface (distance heatmap, PCA scatter, fingerprint).
+- `tools/export_flame_basis.py` — export the FLAME shape basis for `viewer/sliders.html`.
+- `viewer/index.html` — `<model-viewer>` page (drag-rotate a `.glb`).
+- `viewer/sliders.html` — interactive 300-slider FLAME viewer with live hash.
 
 ## Repo layout
 
@@ -51,153 +48,52 @@ Photo → DECA → FLAME parameters (the "JSON") → 3D mesh → browser viewer.
 face-hashing/
 ├── CLAUDE.md                       # guidance for Claude Code
 ├── CONTEXT.md                      # this file — current truth
-├── face-hashing-setup.md           # Stage-1 procedural guide (cells + Drive caching)
-├── face_hashing_research_report.md # deep tool reference for Stages 2–4
+├── face_hashing_research_report.md # deep tool reference for all four stages
 ├── stage2-design.md                # Stage-2 plan: identity key file, two modes, local-first topology
-├── pipeline.py                     # reusable Colab module (bootstrap/load_deca/reconstruct/tweak)
-├── local/                          # Mac-native MICA Stage 1 (no Colab): patcher + runbook
-│   ├── patch_mica_for_mac.py       # makes a MICA checkout run its demo on CPU/MPS (idempotent)
-│   └── README.md                   # the local runbook (verified 2026-06-01)
-├── colab/
-│   └── DECA.ipynb - Colab.webloc   # link to the live Colab notebook (no .ipynb in repo yet)
-├── outputs/.gitkeep                # results handed off via Drive; not committed
+├── local/                          # the Mac-native pipeline (the real workflow)
+│   ├── run.py                      # one command: photos -> {arcface.npy, composed.glb}
+│   ├── mica_local.py               # Stage 1: MICA identity (300-d shape) + ArcFace (512-d)
+│   ├── smirk_local.py              # Stage 3: SMIRK expression/pose + compose with MICA shape
+│   ├── compose_flame.py            # alternate compose (MICA shape + DECA params) — legacy
+│   ├── patch_mica_for_mac.py       # makes a MICA checkout run on CPU/MPS (idempotent)
+│   └── README.md                   # the runbook
+├── tools/
+│   ├── present.py                  # inspect/visualize identity + arcface
+│   └── export_flame_basis.py       # export FLAME basis for the slider viewer
 ├── viewer/
-│   ├── index.html                  # the <model-viewer> page
+│   ├── index.html                  # <model-viewer> page
+│   ├── sliders.html                # interactive FLAME shape sliders + live hash
 │   └── models/.gitkeep             # .glb files go here (git-ignored)
 └── .gitignore
 ```
-(Personal photos, FLAME weights, and the `Drive Folder` alias are git-ignored.)
+(Personal photos `local/in/`, model checkouts `local/MICA` + `local/smirk`, outputs `local/out*`, the exported `viewer/flame/` basis, and generated `.glb`/figures are git-ignored.)
 
-## Where I am right now (2026-05-29)
+## Mac footguns (the ones that bit us)
 
-**Stage 1 runs in-kernel with NO renderer** (see Key decision below). The flow:
+- **Python 3.11 arm64**, not 3.14 — chumpy has no wheels there; install with `pip install --no-build-isolation chumpy` (its setup.py imports `pip`).
+- **`torch.load`** — checkpoints were saved from CUDA; force `map_location="cpu"`, and `weights_only=False` (torch ≥2.6 flipped the default) for the non-tensor payloads. Both runners patch this globally.
+- **MPS** has no float64 — cast tensors to float32 before `.to(device)`.
+- **numpy 2.0** removed aliases (`np.float`, `np.float_`, `np.bool`, `np.Inf`, …) that FLAME's pickles and chumpy reference — restore them before importing the model source.
+- **`mica.testing = True`** — skips MICA `decode()`'s training-only `codedict['flame']` ground-truth block (the identity path is unchanged).
+- **SMIRK detector** — mediapipe's FaceLandmarker misses small-in-frame / profile faces; we fall back to MICA's antelopev2/RetinaFace to locate the face, then re-run mediapipe on a padded crop (native crop framing preserved).
+- **Viewer** — `<model-viewer>` can't load `.glb` over `file://`; serve over HTTP. The exported FLAME basis under `viewer/flame/` is license-gated — keep it local, don't commit or serve publicly.
 
-- In the Colab notebook process, construct DECA with its rasterizer neutered
-  (`DECA._setup_renderer = lambda self, m: None`), then call `deca.encode(img)` and the FLAME
-  decoder `deca.flame(shape, exp, pose)` directly → vertices → trimesh `.glb` + params `.npz`.
-  This replaces `demos/demo_reconstruct.py` entirely (no rasterizer, no `--saveVis`).
-- chumpy fixed with an **in-kernel monkeypatch** (inspect.getargspec + numpy aliases) —
-  sufficient now that we don't shell out to a `!python` subprocess.
-- face-alignment `LandmarksType._2D` → `TWO_D` patched in DECA's `detectors.py`.
-- Weights cached in Drive: `deca_model.tar` gdown'd once into `Face-Hashing/cache/` and copied
-  locally each session; FLAME `generic_model.pkl` copied from `Face-Hashing/FLAME/FLAME2020/`.
-- Exact cells: `face-hashing-setup.md` §3. Reusable module: `pipeline.py`.
-- Verified in Colab (2026-05-29): the in-kernel path reconstructs all input photos end-to-end
-  to `.glb` + params (7/7); `flame.faces_tensor` and the `flame()` kwargs confirmed on this build.
-- Inputs are downscaled to ≤1024 px (+ EXIF-rotated) before the FAN detector — it otherwise
-  runs on the full image and OOMs a free-tier T4 on large phone photos — and GPU memory is freed
-  per image. `.jpeg` is handled via an explicit file list (TestData's glob misses it).
+## Design decisions
 
-## Update (2026-06-01): MICA + local-first verified
+- **MICA over DECA for identity** — DECA `shape` drifts photo-to-photo (a reconstruction objective, not an identity one); MICA returns a pose/expression-invariant identity (the consistency numbers above).
+- **SMIRK over DECA for expression** — better expressions, plus jaw + eyelids (CVPR'24, MIT).
+- **Renderer-free** — params + mesh come from the encoder + FLAME decoder; no rasterizer, nothing to build on macOS.
+- **Two subprocesses, not one process** — the `utils`/`configs`/`datasets` name collision between MICA and SMIRK makes a single interpreter fragile; isolate them.
+- **Two identity vectors** — ArcFace 512-d is the identity/key; the MICA 300-d shape is the payload (a lossy projection of the 512-d). See `stage2-design.md`.
+- **Untextured coarse mesh** (gray vertex color), Skyrim aesthetic; FLAME verts + faces → `.glb` via trimesh (`<model-viewer>` doesn't load `.obj`).
 
-- **Stage-1 identity extraction pivoted toward MICA.** DECA `shape` drifts photo-to-photo (it's a
-  reconstruction objective, not an identity one); MICA returns a pose/expression-invariant FLAME
-  *identity* (300-d) — what the hash actually needs. Measured on a small set (`consistency_report` +
-  the MICA notebook): ArcFace AUC 1.00 (recognition ceiling) > MICA 0.94 > DECA 0.86 — MICA sits just
-  under the ceiling.
-- **MICA Stage 1 now runs natively on the Mac (no Colab, no GPU).** Its inference path is
-  PyTorch3D-free, so there's no renderer to build — just CPU-safety + the chumpy/numpy/face_alignment
-  patches. CPU output matches Colab at **cosine 1.0** on the same photo; MPS works too. Runner +
-  runbook: `local/patch_mica_for_mac.py`, `local/README.md`.
-- **Stage-2 architecture drafted** in `stage2-design.md`: an encrypted per-user identity key file,
-  two run modes (recurring vs one-off), a keyed transform registry, and a local-first topology
-  (Stages 1–3 on the Mac, only the diffusion step behind a GPU API).
-- **Next:** wrap the patched-demo flow into a clean in-process `mica_embed(image_path) -> 300-d` as
-  Stage 1's local entry point (no subprocess, no arcface-blob disk round-trip).
+## Open questions / next
 
-## Key decision (2026-05-29): in-kernel, no renderer, keep DECA
-
-After fighting DECA's build on modern Colab (chumpy, face-alignment, and a custom CUDA
-rasterizer that hardcodes gcc-7), three research agents converged on:
-
-- **The rasterizer is optional.** Our deliverables (param dict + mesh) come from `encode()`
-  (a plain ResNet) and the FLAME decoder — neither renders. The CUDA build only fires from
-  `set_rasterizer('standard')` in `DECA.__init__`; neuter it and the build is gone. This is
-  also why dropping the renderer doesn't hurt the Skyrim-slider demo — that demo is just
-  params → FLAME decoder → mesh → `.glb`, never a render.
-- **Don't switch tools to escape the build.** Every maintained successor (SMIRK CVPR'24,
-  EMOCA→INFERNO, MICA) depends on the SAME PyTorch3D and targets equally-old envs. FLAME's
-  shape/exp/pose is the cleanest match to "mutate identity, preserve expression", so DECA/FLAME
-  stays. SMIRK is bookmarked as a later *quality* upgrade (MIT, better expressions), not an
-  infra fix. MediaPipe is the escape hatch only if install-simplicity ever beats having a real
-  identity subspace — it has none, so it would weaken Stage 2.
-- **Run in-kernel.** Avoids the subprocess-loses-monkeypatch problem and is the setup Stage 2
-  needs anyway (load params → transform → re-decode, all live in the kernel).
-
-## Patches needed each cold start (ephemeral runtime; re-run after every reset)
-
-`site-packages` and `/content` are wiped on reset (Drive persists). `pipeline.bootstrap()`
-re-applies these idempotently. With the in-kernel approach they're simple:
-
-**1. chumpy — in-kernel monkeypatch, run BEFORE importing decalib/chumpy:**
-
-```python
-import inspect, numpy as np
-if not hasattr(inspect, 'getargspec'):
-    inspect.getargspec = inspect.getfullargspec
-for a, r in [('bool',bool),('int',int),('float',float),('complex',complex),
-             ('object',object),('str',str),('unicode',str)]:
-    if not hasattr(np, a): setattr(np, a, r)
-```
-
-**2. face-alignment** — replace `LandmarksType._2D` → `LandmarksType.TWO_D` in
-`/content/DECA/decalib/datasets/detectors.py` (a hard reference resolved at import).
-
-> **Fallback, only if you ever run DECA as a `!python` subprocess again:** the in-kernel
-> patch won't carry into a fresh interpreter (that's what bit us with `demo_reconstruct.py` —
-> `AttributeError: module 'inspect' has no attribute 'getargspec'` at `chumpy/ch.py:1203`).
-> Then prepend an on-disk shim to chumpy's `__init__.py` so it runs on every `import chumpy`:
->
-> ```python
-> import os, chumpy
-> shim = (
->     "import numpy as _np, inspect as _inspect\n"
->     "if not hasattr(_inspect, 'getargspec'):\n"
->     "    _inspect.getargspec = _inspect.getfullargspec\n"
->     "for _a, _r in [('bool',bool),('int',int),('float',float),('complex',complex),('object',object),('str',str),('unicode',str)]:\n"
->     "    if not hasattr(_np, _a):\n"
->     "        setattr(_np, _a, _r)\n"
->     "# --- end DECA-on-py312 shim ---\n"
-> )
-> p = os.path.join(os.path.dirname(chumpy.__file__), '__init__.py')
-> s = open(p).read()
-> if 'DECA-on-py312 shim' not in s: open(p, 'w').write(shim + s)
-> ```
->
-> It *restores* the numpy aliases rather than stripping the `from numpy import bool, …` line,
-> which chumpy uses internally during the FLAME `pickle.load`. Not needed for the in-kernel path.
-
-## Known design decisions
-
-- Keep DECA/FLAME over switching (successors share the PyTorch3D dependency; FLAME params fit
-  the hash design) — see Key decision above.
-- Run DECA in-kernel and skip the rasterizer (params + mesh need no rendering).
-- Untextured coarse mesh (gray vertex color) for the Skyrim aesthetic.
-- `<model-viewer>` for the browser viewer (one HTML tag, no three.js code).
-- FLAME verts + faces → `.glb` via trimesh (model-viewer doesn't load `.obj`).
-- Google Drive doubles as the cross-restart cache: big/slow downloads (the 434 MB weights) live
-  there; only cheap steps (repo clone, pip, patches) are redone each session. Do NOT persist
-  `site-packages` to Drive — native libs load flakily over the FUSE mount.
-
-## Open questions / known footguns
-
-- Stage 2: implement `transform(params, key) -> params'` as a hot-swappable strategy
-  (start: seeded Gaussian offset on `shape`, clamp ±2σ; preserve `exp`/`pose`). Extend
-  `pipeline.default_mutation` / add a registry.
-- DECA's `TestData` directory glob misses `.jpeg` (only `*.jpg/*.png/*.bmp`) → silent 0-image
-  no-op; pass an explicit file list. The FAN detector runs on the full image and OOMs a T4 on
-  large phone photos → downscale to ≤1024 px before detection and free GPU memory per image
-  (after an OOM, restart the runtime — IPython's saved traceback pins the GPU memory).
-- Colab is Python 3.12 (DECA targets 3.7–3.10). You can NO LONGER pin Colab to 3.10 (aged out
-  of the 1-year runtime window); 3.11 is the oldest selectable and the choice doesn't persist
-  across sessions — so keep setup idempotent instead.
-- Correction to an earlier note: a prebuilt PyTorch3D wheel DOES now exist for modern stacks
-  (MiroPsota builder, through Torch 2.6 / cu126 / py3.14) — relevant only if you ever want
-  rendering back; the in-kernel path needs no PyTorch3D at all.
+- **Stage 2:** implement `transform(shape_300, key) -> shape'` as a hot-swappable strategy (start: seeded Gaussian offset, clamp ±σ; preserve expression/pose). Mutate before compose. See `stage2-design.md`.
+- **Stage 4:** diffusion (InstantID / PuLID / Arc2Face) for photoreal + composite — the one stage that may live behind a GPU API.
 
 ## Reference
 
-- `face-hashing-setup.md` — the current Stage-1 procedural source of truth (cells + caching).
-- `pipeline.py` — reusable module (`bootstrap` / `load_deca` / `reconstruct` / `tweak`).
-- `face_hashing_research_report.md` — deep tool reference for Stages 2–4.
+- `local/README.md` — the runbook (setup, weights, verification, running the pipeline).
+- `face_hashing_research_report.md` — deep tool reference for all four stages.
 - `stage2-design.md` — Stage-2 plan: encrypted identity key file, two modes, keyed transform, local-first topology.

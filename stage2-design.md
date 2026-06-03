@@ -10,7 +10,7 @@ identity vector) is the input to everything below.
 ## 1. The problem this solves
 
 The hash promise is **determinism**: the same person's face must always map to the same output
-face. Measured reality (see `consistency_report`): identity vectors *cluster* per person but never
+face. Measured reality (see `tools/present.py --compare`): identity vectors *cluster* per person but never
 *coincide* — MICA identity scored AUC ≈ 0.94, ArcFace ≈ 1.00, on a small set. So a naive
 `transform(shape, key) → shape'` run on each photo would hash a person's several photos to several
 *different* outputs, because the input `shape` wobbles photo-to-photo. The wobble is the enemy.
@@ -143,12 +143,12 @@ Free, because the transform is keyed.
 ## 4. Enrollment (builds a key file)
 
 Cooperative, FaceID-style — the one step that needs the subject's participation. Reuses pieces that
-already exist in `pipeline.py` (`arcface_embed`, the MICA extractor, the FLAME decoder).
+already exist in `local/mica_local.py` (`arcface_embed`, `embed` — the MICA extractor — and the FLAME decoder).
 
 1. **Capture** a few photos at different angles (3–6).
 2. **Confirm same person:** embed each with `arcface_embed`; check they mutually pass
    `match_threshold` (reject outliers — a stray photo of someone else). This is the enrollment-time
-   analog of `consistency_report`'s intra-person check.
+   analog of `present.py --compare`'s intra-person check.
 3. **ArcFace centroid:** mean of the embeddings, **L2-renormalized** → `arcface_centroid`.
 4. **MICA shape average:** run MICA on each photo, **average in shape-coefficient space**
    (FLAME shape is linear/PCA, so the mean of identity vectors is itself a valid face — *do not*
@@ -163,8 +163,9 @@ depth ambiguity) — a quality win independent of determinism.
 
 ## 5. The transform (the "hash function") and where it slots in
 
-`pipeline.default_mutation(shape)` is the current placeholder (it flips/exaggerates a couple of PCs).
-Stage 2 generalizes it to a **keyed, hot-swappable registry**:
+`viewer/sliders.html` holds the current placeholder (`flame_shape_offset_v1` — a key-seeded Gaussian
+offset on the shape PCs); there's no Python transform yet. Stage 2 generalizes it to a **keyed,
+hot-swappable registry**:
 
 ```python
 def transform(shape, key, strategy="flame_shape_offset_v1"):
@@ -181,15 +182,15 @@ encryption** — it does not become cryptographic just because the *key file* ar
 Those are two separate layers: the file gets real crypto (§3.2); the face-mutation stays a keyed
 geometric move. Don't conflate them.
 
-### Planned `pipeline.py` surface (additions)
+### Planned Stage-2 module surface (e.g. `local/face_hash.py`)
 
 ```
-# identity extraction (Stage 1) — exists / to add
-arcface_embed(image_path)                       # exists
-mica_embed(image_path)                          # to add: MICA shape, no renderer (mirrors load_deca)
+# identity extraction (Stage 1) — already in local/mica_local.py
+arcface_embed(image_path)                       # exists: 512-d ArcFace
+embed(image_path)                               # exists: MICA 300-d shape (renderer-free)
 
 # the hash (Stage 2)
-transform(shape, key, strategy=...)             # registry; default_mutation folds in as a strategy
+transform(shape, key, strategy=...)             # registry; the viewer's flame_shape_offset_v1 folds in
 enroll(image_paths, passphrase, out_path, ...)  # §4 -> writes <name>.fhash
 load_identity(path, passphrase)                 # decrypt + verify schema -> payload dict
 verify(payload, image_path)                     # 1:1 ArcFace gate -> bool/score
@@ -240,8 +241,9 @@ basis, just a better exp/pose source. Prototyped by `local/mica_local.compose_me
 ## 7. Deployment topology — local-first, with one remote GPU call
 
 The "everything in Colab" setup was never load-bearing; it was a **workaround for the PyTorch3D /
-CUDA-rasterizer build**, which we already eliminated by **not rendering** (`load_deca` neuters
-`_setup_renderer`). Drop rendering and most of the pipeline stops needing CUDA at all:
+CUDA-rasterizer build**, which we already eliminated by **not rendering** (the MICA/SMIRK runners
+import the encoder + FLAME decoder and skip the Renderer). Drop rendering and most of the pipeline
+stops needing CUDA at all:
 
 | Stage | Needs a GPU? | Where it can run |
 |---|---|---|
@@ -304,10 +306,10 @@ exposure.
    needed — the inference path is clean. Runner + runbook in `local/` (`patch_mica_for_mac.py`,
    `README.md`); MPS works too (needs a float32 input cast, handled by the patcher). The local-first
    pivot is green.
-2. **Pick `match_threshold`** empirically from `consistency_report` data (ArcFace intra vs inter on a
-   larger, matched set) rather than guessing 0.35.
+2. **Pick `match_threshold`** empirically from `present.py --compare` data (ArcFace intra vs inter on
+   a larger, matched set) rather than guessing 0.35.
 3. **Implement `transform` v1** (seeded Gaussian offset on `shape`, ±2–3σ clamp) + the registry; fold
-   `default_mutation` in as a strategy.
+   the viewer's `flame_shape_offset_v1` in as a strategy.
 4. **Implement the key-file layer** (`enroll` / `load_identity` / `verify`) with argon2id + AES-GCM.
 5. **Stand up Stage 4** behind one API call (start with a hosted InstantID/PuLID endpoint), then wire
    the privacy decomposition in §7.3.

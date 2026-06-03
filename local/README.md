@@ -243,7 +243,7 @@ smirk.compose(h, "photo.jpg", "identity.npy", "out.glb")  # MICA shape + SMIRK e
 
 ## What's next
 
-- Fold `mica_local.embed` into `pipeline.py` alongside `arcface_embed` as Stage 1's identity
-  extractors, and add a MICA row to `consistency_report`.
+- Add the Stage-2 `transform(shape, key)` (a `local/face_hash.py` module) and wire it into `run.py`
+  so `composed.glb` carries the *hashed* shape (today it's the raw MICA shape).
 - Build the Stage-2 key-file layer on top (`enroll` averages `embed` over a person's photos →
   `arcface_centroid` + `source_shape`; see `../stage2-design.md` §3–§4).

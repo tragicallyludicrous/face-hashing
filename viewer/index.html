@@ -42,7 +42,7 @@
 
     // Keep the viewpoint fixed across model switches so faces compare at the same angle.
     // (The mesh's own orientation still depends on how it was exported — use neutral .glbs,
-    //  e.g. pipeline.export_neutral, for a true apples-to-apples shape comparison.)
+    //  e.g. a neutral export from mica_local, for a true apples-to-apples shape comparison.)
     let savedOrbit = null;
     viewer.addEventListener('camera-change', () => { savedOrbit = viewer.getCameraOrbit(); });
     viewer.addEventListener('load', () => {
