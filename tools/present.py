@@ -6,15 +6,21 @@ module and breaks numpy/matplotlib imports.)
 
 Trawls an output tree (default local/out) RECURSIVELY for identity vectors and renders separation
 metrics. It matches files by *suffix*, so it handles both layouts:
-  - run.py:      out/<stem>/<stem>_arcface.npy
-  - mica_local:  out/<stem>/{identity.npy, arcface.npy}
+  - run.py:      out/<stem>/{<stem>_arcface.npy, <stem>_shape.glb}
+  - mica_local:  out/<stem>/{identity.npy, arcface.npy, <stem>.glb}
 Needs only numpy + matplotlib (NOT torch/MICA):
 
     pip install matplotlib            # numpy already in the local/.venv
 
 Pick which vector with --source:
     --source arcface   512-d ArcFace embedding (default; what run.py saves)  <- recognition 'ceiling'
-    --source mica      300-d FLAME identity (identity.npy)                    <- the hash payload
+    --source mica      300-d FLAME identity                                  <- the hash payload
+
+For --source mica it reads identity.npy if present (mica_local), else RECOVERS the 300-d shape by
+projecting the neutral _shape.glb onto the FLAME shape basis: the mesh is exactly
+v_template + shapedirs[:, :, :300] @ beta, so the projection returns beta to ~1e-6. That path needs
+the exported basis (viewer/flame/flame_basis.bin from tools/export_flame_basis.py) and trimesh to
+read the .glb; both are loaded lazily, so the arcface path stays numpy-only.
 
 Separation view — the presentable part. Groups photos by person from the 'Person Context' /
 'person-context' filename and renders the relationships (raw per-coefficient overlays are noisy;
@@ -46,9 +52,9 @@ DEFAULT_DIR = os.path.join(ROOT, "local", "out")
 VIEWER_MODELS = os.path.join(ROOT, "viewer", "models")
 FIG = os.path.join(ROOT, "tools", "figures")
 
-SOURCES = {                                  # --source -> (filename suffix, label)
-    "arcface": ("arcface.npy",  "ArcFace embedding"),
-    "mica":    ("identity.npy", "MICA identity"),
+SOURCES = {                                  # --source -> (label, [(filename suffix, kind), ...] in priority order)
+    "arcface": ("ArcFace embedding", [("arcface.npy", "npy")]),
+    "mica":    ("MICA identity",     [("identity.npy", "npy"), ("_shape.glb", "glb")]),
 }
 
 
@@ -58,34 +64,78 @@ def person_of(stem):
 
 
 def _stem_of(path, suffix):
-    """Photo stem from a vector path: '<stem>_arcface.npy' -> '<stem>', or legacy 'arcface.npy' -> parent dir."""
+    """Photo stem from a path: '<stem>_arcface.npy' -> '<stem>', or a bare 'arcface.npy' -> parent dir."""
     base = os.path.basename(path)
     if base == suffix:                       # bare name -> the stem is the containing folder
         return os.path.basename(os.path.dirname(path))
-    return base[: -len(suffix)].rstrip("_")  # '<stem>_arcface.npy' -> '<stem>'
+    return base[: -len(suffix)].rstrip("_")  # '<stem>_arcface.npy' / '<stem>_shape.glb' -> '<stem>'
 
 
-def find_vectors(root, suffix):
-    """Recursively find files ending in <suffix> under root -> {stem: path} (first hit per stem)."""
-    found = {}
+def find_vectors(root, candidates):
+    """Recursively find vectors under root -> {stem: (path, kind)}. Earlier candidates win per stem."""
+    allfiles = []
     for dirpath, dirs, files in os.walk(root):
         dirs.sort()                          # deterministic traversal
         for f in sorted(files):
+            allfiles.append((dirpath, f))
+    found = {}
+    for suffix, kind in candidates:          # priority order (e.g. identity.npy before _shape.glb)
+        for dirpath, f in allfiles:
             if f.endswith(suffix):
-                found.setdefault(_stem_of(os.path.join(dirpath, f), suffix), os.path.join(dirpath, f))
+                stem = _stem_of(os.path.join(dirpath, f), suffix)
+                found.setdefault(stem, (os.path.join(dirpath, f), kind))
     return found
+
+
+# ---- FLAME-basis projection: recover MICA's 300-d shape from a neutral _shape.glb ----------
+
+_BASIS = None                                # (v_template_flat, pinv(shapedirs.T)) cached after first use
+
+
+def _flame_basis():
+    """Load the exported FLAME shape basis (numpy, no torch) and cache (v_template, pinv) for projection."""
+    global _BASIS
+    if _BASIS is None:
+        bdir = os.path.join(ROOT, "viewer", "flame")
+        binp, manp = os.path.join(bdir, "flame_basis.bin"), os.path.join(bdir, "flame_basis.json")
+        if not os.path.exists(binp):
+            raise SystemExit("recovering MICA shape from *_shape.glb needs the FLAME basis. Run:\n"
+                             "  local/.venv/bin/python tools/export_flame_basis.py\n"
+                             "(license-gated, git-ignored). Or use --source arcface.")
+        man = json.load(open(manp)); nv, K = man["n_verts"], man["n_shape"]
+        buf = np.fromfile(binp, dtype="<f4", count=3 * nv + K * 3 * nv)
+        vt = buf[:3 * nv].astype(np.float64)                       # (3*nv,) vertex-major
+        S = buf[3 * nv: 3 * nv + K * 3 * nv].reshape(K, 3 * nv).astype(np.float64)
+        _BASIS = (vt, np.linalg.pinv(S.T))                         # pinv (K, 3*nv): one SVD up front
+    return _BASIS
+
+
+def _beta_from_glb(path):
+    """Neutral _shape.glb -> 300-d MICA shape beta, by projecting verts onto the FLAME shape basis."""
+    import trimesh
+    m = trimesh.load(path, process=False, force="mesh")
+    V = np.asarray(m.vertices, dtype=np.float64) / 1000.0          # glb stores verts in mm -> meters
+    vt, pinv = _flame_basis()
+    d = V.reshape(-1) - vt                                         # vertex-major [x0,y0,z0,...] - v_template
+    if d.size != pinv.shape[1]:
+        raise SystemExit(f"{path}: {V.shape[0]} verts vs FLAME basis {pinv.shape[1] // 3} — basis/model mismatch.")
+    return (pinv @ d).astype(np.float32)
+
+
+def _load_vec(path, kind):
+    return np.load(path).ravel() if kind == "npy" else _beta_from_glb(path)
 
 
 def availability(root):
     """{source: count} found under root, for helpful 'nothing here / try the other source' messages."""
-    return {src: len(find_vectors(root, suf)) for src, (suf, _) in SOURCES.items()}
+    return {src: len(find_vectors(root, cands)) for src, (_, cands) in SOURCES.items()}
 
 
-def load_all(root, suffix):
+def load_all(root, candidates):
     """-> (stems, persons, X[n,d]) for every vector found under root."""
-    found = find_vectors(root, suffix)
+    found = find_vectors(root, candidates)
     stems = sorted(found)
-    X = np.stack([np.load(found[s]).ravel() for s in stems]) if stems else np.empty((0, 0))
+    X = np.stack([_load_vec(*found[s]) for s in stems]) if stems else np.empty((0, 0))
     return stems, [person_of(s) for s in stems], X
 
 
@@ -115,12 +165,13 @@ def _to_grid(v):
 
 # ---- single-photo inspection ---------------------------------------------------------------
 
-def single(root, stem, suffix, label, source):
-    found = find_vectors(root, suffix)
+def single(root, stem, candidates, label, source):
+    found = find_vectors(root, candidates)
     if stem not in found:
-        raise SystemExit(f"no '{suffix}' for '{stem}' under {root}. "
+        raise SystemExit(f"no {label} vector for '{stem}' under {root}. "
                          f"Available: {', '.join(sorted(found)) or '(none)'}")
-    v = np.load(found[stem]).ravel()
+    path, kind = found[stem]
+    v = _load_vec(path, kind)
     os.makedirs(FIG, exist_ok=True)
 
     # 1) JSON of the raw vector
@@ -141,7 +192,7 @@ def single(root, stem, suffix, label, source):
     print("fingerprint ->", fp)
 
     # 3) copy the mesh(es) sitting beside the vector into the viewer (drag-rotate at :8080)
-    vec_dir = os.path.dirname(found[stem])
+    vec_dir = os.path.dirname(path)
     glbs = sorted(g for g in os.listdir(vec_dir) if g.startswith(stem) and g.endswith(".glb"))
     if glbs:
         os.makedirs(VIEWER_MODELS, exist_ok=True)
@@ -161,12 +212,12 @@ def _auc(intra, inter):
     return sum(float((a < inter).sum() + 0.5 * (a == inter).sum()) for a in intra) / (len(intra) * len(inter))
 
 
-def compare(root, suffix, label, source):
-    stems, persons, X = load_all(root, suffix)
+def compare(root, candidates, label, source):
+    stems, persons, X = load_all(root, candidates)
     if len(stems) < 2:
         avail = availability(root)
         hint = f" Try --source {max(avail, key=avail.get)}." if max(avail.values(), default=0) >= 2 else ""
-        raise SystemExit(f"need >=2 '{suffix}' vectors under {root} to compare; found "
+        raise SystemExit(f"need >=2 {label} vectors under {root} to compare; found "
                          + ", ".join(f"{s}={n}" for s, n in avail.items()) + "." + hint)
     os.makedirs(FIG, exist_ok=True)
 
@@ -228,11 +279,11 @@ if __name__ == "__main__":
     ap.add_argument("--dir", default=DEFAULT_DIR, help="output tree to trawl recursively (default local/out)")
     a = ap.parse_args()
     root = os.path.abspath(a.dir)
-    suffix, label = SOURCES[a.source]
+    label, candidates = SOURCES[a.source]
     if a.compare:
-        compare(root, suffix, label, a.source)
+        compare(root, candidates, label, a.source)
     elif a.stem:
-        single(root, a.stem, suffix, label, a.source)
+        single(root, a.stem, candidates, label, a.source)
     else:
         avail = availability(root)
         ap.error(f"give a stem or --compare. Found under {a.dir}: "
