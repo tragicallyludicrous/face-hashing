@@ -1,41 +1,39 @@
 """
-present.py — inspect & present MICA identity / ArcFace outputs.
+present.py — inspect & present the local pipeline's identity outputs.
 
 (Named present.py, NOT inspect.py, on purpose: a top-level inspect.py shadows the stdlib `inspect`
 module and breaks numpy/matplotlib imports.)
 
-Operates on the local results in  local/out/<stem>/{identity.npy, arcface.npy, <stem>.glb}
-(written by local/mica_local.py). Needs only numpy + matplotlib (NOT torch/MICA):
+Trawls an output tree (default local/out) RECURSIVELY for identity vectors and renders separation
+metrics. It matches files by *suffix*, so it handles both layouts:
+  - run.py:      out/<stem>/<stem>_arcface.npy
+  - mica_local:  out/<stem>/{identity.npy, arcface.npy}
+Needs only numpy + matplotlib (NOT torch/MICA):
 
     pip install matplotlib            # numpy already in the local/.venv
 
 Pick which vector with --source:
-    --source mica      300-d FLAME identity (default)   <- the hash payload
-    --source arcface   512-d ArcFace embedding          <- the recognition 'ceiling' MICA consumes
+    --source arcface   512-d ArcFace embedding (default; what run.py saves)  <- recognition 'ceiling'
+    --source mica      300-d FLAME identity (identity.npy)                    <- the hash payload
 
-Single photo — JSON of the vector, a "fingerprint" image, and copy the mesh to the viewer:
+Separation view — the presentable part. Groups photos by person from the 'Person Context' /
+'person-context' filename and renders the relationships (raw per-coefficient overlays are noisy;
+THESE separate people):
 
-    python tools/present.py <stem> [--source mica|arcface]
-      -> tools/figures/<stem>_<source>_identity.json
-         tools/figures/<stem>_<source>_fingerprint.png
-         copies local/out/<stem>/<stem>.glb -> viewer/models/
-
-Separation view — the presentable part. Groups photos by person from the "person-context"
-filename and renders the relationships (raw per-coefficient overlays are noisy; THESE separate
-people):
-
-    python tools/present.py --compare [--source mica|arcface]
-      -> tools/figures/distance_heatmap_<source>.png   (same-person = dark blocks)
+    python tools/present.py --compare [--source arcface|mica] [--dir local/out]
+      -> tools/figures/distance_heatmap_<source>.png   (same person = dark blocks)
          tools/figures/pca_scatter_<source>.png        (each person a cluster)
          prints intra/inter cosine distance + verification AUC
 
-Run it twice (--source mica, then --source arcface) to compare the FLAME identity against the
-ArcFace ceiling on the same photos.
+Single photo — JSON of the vector, a 'fingerprint' image, and copy its mesh(es) to the viewer:
+
+    python tools/present.py "<stem>" [--source arcface|mica] [--dir local/out]
 """
 import argparse
 import itertools
 import json
 import os
+import re
 import shutil
 
 import numpy as np
@@ -44,31 +42,50 @@ matplotlib.use("Agg")                       # headless: just write PNGs
 import matplotlib.pyplot as plt
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "local", "out")            # MICA results
+DEFAULT_DIR = os.path.join(ROOT, "local", "out")
 VIEWER_MODELS = os.path.join(ROOT, "viewer", "models")
 FIG = os.path.join(ROOT, "tools", "figures")
 
-SOURCES = {                                          # --source -> (filename, label)
-    "mica":    ("identity.npy", "MICA identity"),
+SOURCES = {                                  # --source -> (filename suffix, label)
     "arcface": ("arcface.npy",  "ArcFace embedding"),
+    "mica":    ("identity.npy", "MICA identity"),
 }
 
 
 def person_of(stem):
-    """Filenames are 'person-context' -> person is everything before the first hyphen."""
-    return stem.split("-", 1)[0]
+    """'Person Context' or 'person-context' -> person is the first token (case-insensitive)."""
+    return re.split(r"[ -]", stem.strip(), 1)[0].lower()
 
 
-def list_stems(fname):
-    if not os.path.isdir(OUT):
-        return []
-    return sorted(d for d in os.listdir(OUT) if os.path.exists(os.path.join(OUT, d, fname)))
+def _stem_of(path, suffix):
+    """Photo stem from a vector path: '<stem>_arcface.npy' -> '<stem>', or legacy 'arcface.npy' -> parent dir."""
+    base = os.path.basename(path)
+    if base == suffix:                       # bare name -> the stem is the containing folder
+        return os.path.basename(os.path.dirname(path))
+    return base[: -len(suffix)].rstrip("_")  # '<stem>_arcface.npy' -> '<stem>'
 
 
-def load_all(fname):
-    """-> (stems, persons, X[n,d])."""
-    stems = list_stems(fname)
-    X = np.stack([np.load(os.path.join(OUT, s, fname)).ravel() for s in stems])
+def find_vectors(root, suffix):
+    """Recursively find files ending in <suffix> under root -> {stem: path} (first hit per stem)."""
+    found = {}
+    for dirpath, dirs, files in os.walk(root):
+        dirs.sort()                          # deterministic traversal
+        for f in sorted(files):
+            if f.endswith(suffix):
+                found.setdefault(_stem_of(os.path.join(dirpath, f), suffix), os.path.join(dirpath, f))
+    return found
+
+
+def availability(root):
+    """{source: count} found under root, for helpful 'nothing here / try the other source' messages."""
+    return {src: len(find_vectors(root, suf)) for src, (suf, _) in SOURCES.items()}
+
+
+def load_all(root, suffix):
+    """-> (stems, persons, X[n,d]) for every vector found under root."""
+    found = find_vectors(root, suffix)
+    stems = sorted(found)
+    X = np.stack([np.load(found[s]).ravel() for s in stems]) if stems else np.empty((0, 0))
     return stems, [person_of(s) for s in stems], X
 
 
@@ -98,11 +115,12 @@ def _to_grid(v):
 
 # ---- single-photo inspection ---------------------------------------------------------------
 
-def single(stem, fname, label, source):
-    p = os.path.join(OUT, stem, fname)
-    if not os.path.exists(p):
-        raise SystemExit(f"no {fname} for '{stem}'. Available: {', '.join(list_stems(fname)) or '(none)'}")
-    v = np.load(p).ravel()
+def single(root, stem, suffix, label, source):
+    found = find_vectors(root, suffix)
+    if stem not in found:
+        raise SystemExit(f"no '{suffix}' for '{stem}' under {root}. "
+                         f"Available: {', '.join(sorted(found)) or '(none)'}")
+    v = np.load(found[stem]).ravel()
     os.makedirs(FIG, exist_ok=True)
 
     # 1) JSON of the raw vector
@@ -122,14 +140,17 @@ def single(stem, fname, label, source):
     plt.tight_layout(); plt.savefig(fp, dpi=150); plt.close()
     print("fingerprint ->", fp)
 
-    # 3) copy the mesh into the viewer (drag-rotate at http://localhost:8080)
-    glb = os.path.join(OUT, stem, f"{stem}.glb")
-    if os.path.exists(glb):
+    # 3) copy the mesh(es) sitting beside the vector into the viewer (drag-rotate at :8080)
+    vec_dir = os.path.dirname(found[stem])
+    glbs = sorted(g for g in os.listdir(vec_dir) if g.startswith(stem) and g.endswith(".glb"))
+    if glbs:
         os.makedirs(VIEWER_MODELS, exist_ok=True)
-        shutil.copy(glb, VIEWER_MODELS)
-        print(f"mesh   -> {os.path.join('viewer','models', stem + '.glb')}  (serve: cd viewer && python3 -m http.server 8080)")
+        for g in glbs:
+            shutil.copy(os.path.join(vec_dir, g), VIEWER_MODELS)
+        print("mesh(es) ->", ", ".join(os.path.join("viewer", "models", g) for g in glbs),
+              " (serve: cd viewer && python3 -m http.server 8080)")
     else:
-        print(f"(no {stem}.glb to copy)")
+        print(f"(no {stem}*.glb beside the vector to copy)")
 
 
 # ---- multi-photo separation view -----------------------------------------------------------
@@ -140,10 +161,13 @@ def _auc(intra, inter):
     return sum(float((a < inter).sum() + 0.5 * (a == inter).sum()) for a in intra) / (len(intra) * len(inter))
 
 
-def compare(fname, label, source):
-    stems, persons, X = load_all(fname)
+def compare(root, suffix, label, source):
+    stems, persons, X = load_all(root, suffix)
     if len(stems) < 2:
-        raise SystemExit(f"need >=2 photos with {fname} in local/out/ to compare")
+        avail = availability(root)
+        hint = f" Try --source {max(avail, key=avail.get)}." if max(avail.values(), default=0) >= 2 else ""
+        raise SystemExit(f"need >=2 '{suffix}' vectors under {root} to compare; found "
+                         + ", ".join(f"{s}={n}" for s, n in avail.items()) + "." + hint)
     os.makedirs(FIG, exist_ok=True)
 
     # order by person so same-person photos are adjacent (dark blocks on the diagonal)
@@ -155,11 +179,14 @@ def compare(fname, label, source):
     for i, j in itertools.combinations(range(len(X)), 2):
         (intra if persons[i] == persons[j] else inter).append(D[i, j])
     intra, inter = np.array(intra), np.array(inter)
+    n_people = len(set(persons))
     if len(intra) and len(inter):
-        print(f"[{label}] cosine dist  intra={intra.mean():.3f}  inter={inter.mean():.3f}  "
+        print(f"[{label}] {len(stems)} photos, {n_people} people  |  cosine dist  "
+              f"intra={intra.mean():.3f}  inter={inter.mean():.3f}  "
               f"sep={inter.mean()/(intra.mean()+1e-9):.2f}x  AUC={_auc(intra, inter):.3f}")
     else:
-        print(f"[{label}] (need >=2 photos of one person AND >=2 people for intra/inter stats)")
+        print(f"[{label}] {len(stems)} photos, {n_people} people "
+              f"(need >=2 photos of one person AND >=2 people for intra/inter stats)")
 
     # 1) distance heatmap
     plt.figure(figsize=(6.5, 5.5))
@@ -193,16 +220,20 @@ def compare(fname, label, source):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Inspect/present MICA identity or ArcFace outputs (local/out/).")
-    ap.add_argument("stem", nargs="?", help="a photo stem under local/out/ (single-photo inspection)")
-    ap.add_argument("--compare", action="store_true", help="separation view across all photos")
-    ap.add_argument("--source", choices=list(SOURCES), default="mica",
-                    help="which vector: mica (300-d identity, default) or arcface (512-d embedding)")
+    ap = argparse.ArgumentParser(description="Inspect/present the local pipeline's identity outputs (trawls --dir).")
+    ap.add_argument("stem", nargs="?", help="a photo stem to inspect (single-photo mode)")
+    ap.add_argument("--compare", action="store_true", help="separation view across all photos found")
+    ap.add_argument("--source", choices=list(SOURCES), default="arcface",
+                    help="which vector: arcface (512-d, default; what run.py saves) or mica (300-d identity.npy)")
+    ap.add_argument("--dir", default=DEFAULT_DIR, help="output tree to trawl recursively (default local/out)")
     a = ap.parse_args()
-    fname, label = SOURCES[a.source]
+    root = os.path.abspath(a.dir)
+    suffix, label = SOURCES[a.source]
     if a.compare:
-        compare(fname, label, a.source)
+        compare(root, suffix, label, a.source)
     elif a.stem:
-        single(a.stem, fname, label, a.source)
+        single(root, a.stem, suffix, label, a.source)
     else:
-        ap.error(f"give a stem or --compare. Available: {', '.join(list_stems(fname)) or '(none in local/out)'}")
+        avail = availability(root)
+        ap.error(f"give a stem or --compare. Found under {a.dir}: "
+                 + ", ".join(f"{s}={n}" for s, n in avail.items()))

@@ -241,6 +241,32 @@ h = smirk.load(device="cpu")                              # encoder + FLAME ONCE
 smirk.compose(h, "photo.jpg", "identity.npy", "out.glb")  # MICA shape + SMIRK exp/pose -> .glb
 ```
 
+## Inspecting / presenting the outputs — `tools/present.py`
+
+`tools/present.py` **trawls an output tree** (default `local/out`, override with `--dir`) recursively
+for identity vectors and renders the separation metrics — no torch/MICA needed, just numpy +
+matplotlib (`pip install matplotlib`; numpy is already in the venv). It matches by *suffix*, so it
+reads both layouts: run.py's `out/<stem>/<stem>_arcface.npy` and mica_local's
+`out/<stem>/{identity.npy, arcface.npy}`. People are grouped from the `Person Context` /
+`person-context` filename (case-insensitive), so `Emma IMG_4445` and `emma-restaurant` count as one
+person.
+
+```bash
+# separation view across everything it finds (prints stats + writes 2 PNGs)
+python ../tools/present.py --compare --source arcface          # 512-d ArcFace (default; what run.py saves)
+python ../tools/present.py --compare --source mica             # 300-d MICA identity (needs identity.npy)
+python ../tools/present.py --compare --source arcface --dir out/SMIRK   # point at any tree
+
+# single photo: vector JSON + a "fingerprint" PNG, and copy its <stem>*.glb into viewer/models/
+python ../tools/present.py "emma-restaurant" --source arcface
+```
+
+`--compare` prints e.g. `32 photos, 6 people | intra=0.443 inter=0.974 sep=2.20x AUC=0.995` and writes
+`tools/figures/{distance_heatmap,pca_scatter}_<source>.png` — same-person photos form dark blocks on
+the heatmap and tight clusters in the PCA scatter. Run it for both sources to compare the FLAME
+identity (MICA) against the ArcFace recognition ceiling on the same photos. `tools/figures/` is
+git-ignored (the labels are real names).
+
 ## What's next
 
 - Add the Stage-2 `transform(shape, key)` (a `local/face_hash.py` module) and wire it into `run.py`
