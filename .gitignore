@@ -18,6 +18,7 @@ Drive Folder
 # Local Mac-native MICA runner — generated (the MICA clone, run I/O, scratch).
 # Keep local/patch_mica_for_mac.py and local/README.md tracked.
 local/MICA/
+local/smirk/
 local/in/
 local/out*/
 local/arcface_tmp/

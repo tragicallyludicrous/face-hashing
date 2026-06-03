@@ -211,6 +211,36 @@ CPU-mapped `torch.load`, MPS env, device) are baked into `mica_local.py` itself,
 compare their `identity.npy` — cosine should be ~1.0 (same model, same preprocessing). After that,
 prefer `mica_local.py`.
 
+## Stage 3 — pose the identity: `compose_flame.py` (DECA) / `smirk_local.py` (SMIRK)
+
+MICA gives a *neutral* identity. To put that identity into the original photo's expression and head
+pose — the Stage-3 "reconstruct" — decode FLAME with **MICA shape + an expression/pose source**.
+Two sources, same shared FLAME 2020 basis:
+
+- **DECA** (from Colab `<stem>_params.npz`) — `compose_flame.py`:
+  ```bash
+  python compose_flame.py out/MICA/<stem>/identity.npy <…>/<stem>_params.npz -o out/<stem>/composed.glb
+  ```
+- **SMIRK** (CVPR'24, MIT — much better expressions, plus jaw + eyelids) — `smirk_local.py`, the
+  renderer-free, in-process sibling of `mica_local.py` (same trick: import the encoder + FLAME, skip
+  the PyTorch3D Renderer). Batch by default; pass one photo for a single compose:
+  ```bash
+  python smirk_local.py -i in -o out/SMIRK --mica out/MICA     # per stem: smirk_params.npz + smirk.glb (+composed.glb)
+  python smirk_local.py in/<photo>.jpeg --mica out/MICA/<stem>/identity.npy -o out/<stem>/smirk.glb
+  ```
+  `smirk_params.npz` holds the per-photo payload (`shape/expression/pose/jaw/eyelid/cam`); `smirk.glb`
+  is SMIRK's own native reconstruction; `composed.glb` is the MICA identity wearing this photo's pose.
+  Sanity check: composing a raw MICA identity against its *own* photo barely moves the mesh (same
+  person); a hashed identity diverges. SETUP is in the `smirk_local.py` docstring (clone
+  `georgeretsi/smirk`, `bash quick_install.sh` for `SMIRK_em1.pt` + FLAME/eyelid/mediapipe assets).
+
+As a library it mirrors `mica_local`:
+```python
+import smirk_local as smirk
+h = smirk.load(device="cpu")                              # encoder + FLAME ONCE
+smirk.compose(h, "photo.jpg", "identity.npy", "out.glb")  # MICA shape + SMIRK exp/pose -> .glb
+```
+
 ## What's next
 
 - Fold `mica_local.embed` into `pipeline.py` alongside `arcface_embed` as Stage 1's identity
