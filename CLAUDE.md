@@ -37,7 +37,7 @@ There is no single packaged app; it's a thin driver over two model runners plus 
 - **`local/mica_local.py`** — MICA in-process: `load` → `embed` (300-d shape) / `arcface_embed` (512-d) / `reconstruct` / `compose_mesh`. CPU output matches the original Colab demo at cosine 1.0; MPS works.
 - **`local/smirk_local.py`** — SMIRK in-process (the Stage-3 sibling): `load` → `params` / `compose` / `reconstruct`. `compose` swaps MICA's shape into SMIRK's FLAME so its jaw/eyelids apply natively. Detector: mediapipe first, falling back to MICA's antelopev2/RetinaFace for small-in-frame / profile faces mediapipe misses.
 - **`local/patch_mica_for_mac.py`** — idempotent patcher that makes a MICA checkout run on CPU/MPS (chumpy shim, numpy-2.0 aliases, `LandmarksType._2D`→`TWO_D`, CUDA→CPU provider, CPU-mapped `torch.load`).
-- **Viewer (the Mac, in a browser).** `viewer/index.html` drag-rotates a `.glb` via Google's `<model-viewer>`; `viewer/sliders.html` is an interactive 300-slider FLAME shape viewer with a live deterministic hash preview, built over a locally-exported FLAME basis (`tools/export_flame_basis.py` → `viewer/flame/`).
+- **Viewer (the Mac, in a browser).** `viewer/index.html` auto-lists the meshes in `local/out/` (recursively, by parsing the static server's directory listing) and drag-rotates the selected `.glb` via Google's `<model-viewer>` — so it needs **root-served HTTP** (see Commands); `viewer/sliders.html` is an interactive 300-slider FLAME shape viewer with a live deterministic hash preview, built over a locally-exported FLAME basis (`tools/export_flame_basis.py` → `viewer/flame/`).
 
 ## Commands
 
@@ -53,10 +53,12 @@ Individual stages also run standalone: `python mica_local.py -i in -o out/MICA` 
 **Serve a viewer locally (on the Mac):**
 
 ```bash
-cd viewer && python3 -m http.server 8080      # then open http://localhost:8080/ (index.html or sliders.html)
+python3 -m http.server 8080      # from the repo ROOT; open http://localhost:8080/viewer/
 ```
 
-`<model-viewer>` cannot load `.glb` over `file://`; it must be served over HTTP.
+Serve from the **repo root** (not `viewer/`): `viewer/index.html` lists and loads the pipeline meshes
+straight from `local/out/` (a sibling of `viewer/`), and `viewer/sliders.html` reads the exported FLAME
+basis under `viewer/flame/`. `<model-viewer>` cannot load `.glb` over `file://` — serve over HTTP.
 
 **Inspect identity/embeddings:** `python tools/present.py --compare --source mica|arcface`.
 

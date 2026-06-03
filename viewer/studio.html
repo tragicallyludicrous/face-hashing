@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Face Hashing — studio (shape + composed)</title>
+<style>
+  html,body{margin:0;height:100%;background:#111;color:#eee;font-family:system-ui,sans-serif;overflow:hidden}
+  #app{display:flex;height:100vh}
+  #views{flex:1;display:flex;min-width:0}
+  .view{flex:1;position:relative;min-width:0}
+  #viewComp{border-left:1px solid #333}
+  .view canvas{display:block}
+  .vlabel{position:absolute;top:8px;left:10px;font-size:.74rem;color:#9aa;background:#0008;padding:2px 7px;border-radius:4px;pointer-events:none}
+  .vsub{position:absolute;bottom:8px;left:10px;font-size:.64rem;color:#777;pointer-events:none}
+  #panel{width:320px;padding:14px 16px;background:#181818;box-sizing:border-box;border-left:1px solid #333;display:flex;flex-direction:column}
+  h1{font-weight:300;font-size:1.05rem;margin:.2rem 0 .7rem}
+  select,#key{background:#222;color:#eee;border:1px solid #444;border-radius:4px;padding:.35rem .4rem;font-size:.8rem}
+  #folder{width:100%;margin-bottom:.6rem}
+  #orig{display:none;width:100%;max-width:190px;aspect-ratio:1;background:#000;border:1px solid #333;border-radius:4px;margin-bottom:.6rem}
+  .controls{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.5rem}
+  button{background:#262626;color:#eee;border:1px solid #444;border-radius:4px;padding:.4rem .6rem;font-size:.8rem;cursor:pointer}
+  #hash{background:#2d3a52;border-color:#3f5a86}
+  #key{flex:1;min-width:70px}
+  .row{margin:.3rem 0}
+  .row label{display:flex;justify-content:space-between;font-size:.72rem;color:#bbb}
+  .row input[type=range]{width:100%}
+  #sliders{flex:1;overflow-y:auto;margin:.2rem 0;padding-right:4px}
+  #status{color:#888;font-size:.72rem;margin-top:.5rem;min-height:1.2em}
+  hr{border:none;border-top:1px solid #333;margin:.5rem 0}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="views">
+    <div class="view" id="viewShape"><div class="vlabel">shape · identity (neutral)</div></div>
+    <div class="view" id="viewComp"><div class="vlabel">composed · posed (from photo)</div>
+      <div class="vsub">expression exact · head-pose follow is approximate</div></div>
+  </div>
+  <div id="panel">
+    <h1>Face Hashing — studio</h1>
+    <select id="folder" title="a folder in local/out — loads its _shape.glb + _composed.glb"></select>
+    <canvas id="orig" title="input photo, cropped to the head"></canvas>
+    <div class="controls">
+      <input id="key" type="text" value="hash-v1" title="hash key — change it to swap the hash function">
+      <button id="hash" title="deterministic: same face + same key -> same result">Hash</button>
+      <button id="rand" title="random face (samples the FLAME shape prior)">Randomize</button>
+      <button id="reset" title="back to the loaded person">Reset</button>
+    </div>
+    <hr>
+    <div id="sliders"></div>
+    <div id="status">loading basis…</div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const RANGE = 3.0;                                   // slider extent (± std) and the hash clamp
+const status = m => document.getElementById('status').textContent = m;
+
+// FLAME shape basis:  shape mesh = vtempl + Σ beta_i * shapedirs_i  (orthogonal dirs -> easy projection)
+let nv, nf, K, vtempl, shapedirs, faces, normSq;
+let beta, baseBeta, comp0, posS, posC;               // coeffs, reset target (=loaded id), composed base, live verts
+let viewS, viewC;
+
+async function loadBasis(){
+  const man = await (await fetch('flame/flame_basis.json')).json();
+  const buf = await (await fetch('flame/flame_basis.bin')).arrayBuffer();
+  nv = man.n_verts; nf = man.n_faces; K = man.n_shape;
+  let off = 0;
+  vtempl    = new Float32Array(buf, off, 3*nv);   off += 3*nv*4;
+  shapedirs = new Float32Array(buf, off, K*3*nv); off += K*3*nv*4;
+  faces     = new Uint32Array(buf, off, 3*nf);
+  normSq = new Float32Array(K);                      // ||shapedir_k||^2, for the per-component projection
+  for(let k=0;k<K;k++){ let s=0, b=k*3*nv; for(let j=0;j<3*nv;j++){ const v=shapedirs[b+j]; s+=v*v; } normSq[k]=s; }
+  beta = new Float32Array(K); baseBeta = new Float32Array(K);
+  comp0 = new Float32Array(vtempl);                  // until a folder loads, both views show the mean face
+  posS = new Float32Array(vtempl); posC = new Float32Array(vtempl);
+}
+
+function makeView(el, positions){
+  const r = new THREE.WebGLRenderer({antialias:true});
+  r.setPixelRatio(devicePixelRatio); r.setSize(el.clientWidth, el.clientHeight); el.appendChild(r.domElement);
+  const sc = new THREE.Scene(); sc.background = new THREE.Color(0x111111);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  g.setIndex(new THREE.BufferAttribute(faces, 1));
+  g.computeVertexNormals();
+  sc.add(new THREE.Mesh(g, new THREE.MeshStandardMaterial({color:0xb4b4c8, roughness:0.85, metalness:0.0})));
+  sc.add(new THREE.HemisphereLight(0xffffff, 0x333333, 0.9));
+  const d1 = new THREE.DirectionalLight(0xffffff, 0.8); d1.position.set(1,1,2);   sc.add(d1);
+  const d2 = new THREE.DirectionalLight(0xffffff, 0.3); d2.position.set(-1,-1,-1); sc.add(d2);
+  g.computeBoundingSphere(); const bs = g.boundingSphere;
+  const cam = new THREE.PerspectiveCamera(30, el.clientWidth/el.clientHeight, 0.001, 100);
+  const dist = bs.radius / Math.sin((30*Math.PI/180)/2) * 1.3;
+  cam.position.set(bs.center.x, bs.center.y, bs.center.z + dist);
+  const ctr = new OrbitControls(cam, r.domElement); ctr.target.copy(bs.center); ctr.update();
+  addEventListener('resize', ()=>{ cam.aspect = el.clientWidth/el.clientHeight; cam.updateProjectionMatrix();
+                                   r.setSize(el.clientWidth, el.clientHeight); });
+  return {r, sc, cam, ctr, g};
+}
+function renderLoop(){ requestAnimationFrame(renderLoop);
+  for(const v of [viewS, viewC]){ v.ctr.update(); v.r.render(v.sc, v.cam); } }
+
+// rebuild both views from beta:  shape = vtempl + S·beta ;  composed = comp0 + S·(beta - baseBeta)
+function rebuild(view, positions, base, coeff){
+  positions.set(base);
+  for(let i=0;i<K;i++){ const c = coeff(i); if(c === 0) continue;
+    const b = i*3*nv; for(let j=0;j<3*nv;j++) positions[j] += c*shapedirs[b+j]; }
+  view.g.attributes.position.needsUpdate = true; view.g.computeVertexNormals();
+}
+function rebuildAll(){
+  rebuild(viewS, posS, vtempl, i => beta[i]);
+  rebuild(viewC, posC, comp0,  i => beta[i] - baseBeta[i]);
+}
+
+// single-slider drag: same incremental delta on both views (d/dβ_i of each is shapedir_i)
+function setBeta(i, val){
+  const d = val - beta[i]; if(d === 0) return;
+  const b = i*3*nv;
+  for(let j=0;j<3*nv;j++){ const s = d*shapedirs[b+j]; posS[j] += s; posC[j] += s; }
+  beta[i] = val;
+  for(const v of [viewS, viewC]){ v.g.attributes.position.needsUpdate = true; v.g.computeVertexNormals(); }
+}
+function setBetaAll(arr){ for(let i=0;i<K;i++) beta[i] = arr[i] || 0; rebuildAll(); syncSliders(); }
+
+// recover MICA's 300-d shape from a neutral mesh: beta_k = <shapedir_k, V - vtempl> / ||shapedir_k||^2
+function projectBeta(verts){
+  const out = new Float32Array(K);
+  for(let k=0;k<K;k++){ let s=0, b=k*3*nv; for(let j=0;j<3*nv;j++) s += shapedirs[b+j]*(verts[j]-vtempl[j]); out[k]=s/normSq[k]; }
+  return out;
+}
+
+// ---------- sliders ----------
+function buildSliders(){
+  const box = document.getElementById('sliders'); box.innerHTML='';
+  for(let i=0;i<K;i++){
+    const row = document.createElement('div'); row.className='row';
+    const lab = document.createElement('label');
+    const name = document.createElement('span'); name.textContent = 'shape '+i;
+    const val  = document.createElement('span'); val.textContent = '0.00';
+    lab.append(name, val);
+    const s = document.createElement('input');
+    s.type='range'; s.min=-100; s.max=100; s.value=0; s.dataset.i = i;
+    s.oninput = ()=>{ const v = s.value/100*RANGE; val.textContent = v.toFixed(2); setBeta(i, v); };
+    row.append(lab, s); box.append(row);
+  }
+}
+function syncSliders(){
+  document.querySelectorAll('#sliders input[type=range]').forEach(s=>{
+    const v = beta[+s.dataset.i];
+    s.value = Math.max(-100, Math.min(100, v/RANGE*100));
+    s.parentElement.querySelector('label span:last-child').textContent = v.toFixed(2);
+  });
+}
+
+// ---------- the "hash": deterministic, key-seeded transform of the shape vector ----------
+// flame_shape_offset_v1 — same face + same key => same output. (Mirror in the Stage-2 Python transform.)
+function fnv1a(s){ let h=0x811c9dc5; for(let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h,0x01000193); } return h>>>0; }
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function gaussFrom(rng){ let u=0,v=0; while(u===0)u=rng(); while(v===0)v=rng(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+function transform(b, key, strength=0.8){
+  const rng = mulberry32(fnv1a(key)); const out = new Float32Array(b.length);
+  for(let i=0;i<b.length;i++) out[i] = Math.max(-RANGE, Math.min(RANGE, b[i] + gaussFrom(rng)*strength));
+  return out;
+}
+function applyHash(){ const key = document.getElementById('key').value;
+  setBetaAll(transform(beta, key)); status(`hashed with key "${key}" — both views are the new identity (Reset = back to person)`); }
+function randomize(){
+  const arr = new Float32Array(K), m = Math.min(K, 100);
+  for(let i=0;i<m;i++){ let u=0,v=0; while(u===0)u=Math.random(); while(v===0)v=Math.random();
+    arr[i] = Math.max(-RANGE, Math.min(RANGE, Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v))); }
+  setBetaAll(arr); status('random face (not deterministic; Reset returns to the loaded person)');
+}
+function reset(){ setBetaAll(baseBeta); status('reset — both views back to the loaded person'); }
+
+// ---------- load a folder from local/out (recover identity from _shape.glb, base from _composed.glb) ----------
+const OUT = new URL('../local/out/', location.href);          // out/ is a sibling of viewer/ — serve from repo ROOT
+const IN  = new URL('../local/in/',  location.href);          // original photos (git-ignored; served locally only)
+const gltf = new GLTFLoader();
+let inputsByStem = {};                                        // stem(lowercased) -> original photo URL
+
+async function listInputs(){                                  // map local/in photos by stem, for the thumbnail
+  try{
+    for(const h of await listDir(IN)){
+      if(h.endsWith('/') || h.startsWith('?') || h.startsWith('/')) continue;
+      const stem = decodeURIComponent(h).replace(/\.[^.]+$/, '');
+      inputsByStem[stem.toLowerCase()] = new URL(h, IN).href;
+    }
+  }catch(e){ /* in/ not served or empty -> just no thumbnail */ }
+}
+let cropsByStem = {};                                         // stem(lowercased) -> normalized face box {x,y,w,h}
+async function loadCrops(){                                   // optional: tools/crop_faces.py output
+  try{ const r = await fetch(new URL('../local/out/crops.json', location.href));
+       if(r.ok){ const j = await r.json(); for(const k in j) cropsByStem[k.toLowerCase()] = j[k]; } }
+  catch(e){ /* no crops.json -> show the full photo */ }
+}
+function drawHeadCrop(canvas, img, box){
+  const W = img.naturalWidth, H = img.naturalHeight, S = 240;
+  canvas.width = S; canvas.height = S;
+  const ctx = canvas.getContext('2d'); ctx.fillStyle = '#000'; ctx.fillRect(0,0,S,S);
+  // a SQUARE source region (clamped to the shorter image side) -> square canvas, so no stretch.
+  let cx = W/2, cy = H/2, side = Math.min(W, H);
+  if(box){
+    cx = (box.x + box.w/2)*W; cy = (box.y + box.h/2)*H;
+    side = Math.min(Math.max(box.w*W, box.h*H) * 1.9, W, H);  // padded head box, but kept square + in-bounds
+    cy -= side * 0.08;                                        // bias up for forehead/hair
+  }
+  const sx = Math.max(0, Math.min(cx - side/2, W - side));    // shift the square fully inside the image
+  const sy = Math.max(0, Math.min(cy - side/2, H - side));
+  ctx.drawImage(img, sx, sy, side, side, 0, 0, S, S);
+}
+function showInput(name){
+  const canvas = document.getElementById('orig'), u = inputsByStem[name.toLowerCase()];
+  if(!u){ canvas.style.display = 'none'; return; }
+  const img = new Image();
+  img.onload  = () => { drawHeadCrop(canvas, img, cropsByStem[name.toLowerCase()]); canvas.style.display = 'block'; };
+  img.onerror = () => { canvas.style.display = 'none'; };
+  img.src = u;
+}
+
+async function listDir(url){
+  const r = await fetch(url); if(!r.ok) throw new Error('HTTP '+r.status);
+  const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+  return [...doc.querySelectorAll('a')].map(a => a.getAttribute('href')).filter(Boolean);
+}
+function loadGlbVerts(url){                                    // -> Float32Array(3*nv) world verts (glb units = mm)
+  return new Promise((res, rej)=> gltf.load(url, g=>{
+    let mesh=null; g.scene.traverse(o=>{ if(o.isMesh && !mesh) mesh=o; });
+    if(!mesh) return rej(new Error('no mesh in '+url));
+    const pos = mesh.geometry.attributes.position;
+    if(pos.count !== nv) return rej(new Error(`${pos.count} verts != ${nv} (topology mismatch)`));
+    mesh.updateWorldMatrix(true,false);
+    const out = new Float32Array(3*nv), v = new THREE.Vector3();
+    for(let i=0;i<nv;i++){ v.fromBufferAttribute(pos,i).applyMatrix4(mesh.matrixWorld);
+      out[3*i]=v.x; out[3*i+1]=v.y; out[3*i+2]=v.z; }
+    res(out);
+  }, undefined, rej));
+}
+const toMeters = a => { const o = new Float32Array(a.length); for(let i=0;i<a.length;i++) o[i]=a[i]/1000; return o; };
+
+async function loadFolder(href, name){
+  try{
+    status(`loading ${name}…`);
+    showInput(name);                                                 // the original photo, beside its reconstructions
+    const dir = new URL(href, OUT);
+    const files = await listDir(dir);
+    const find = suf => { const h = files.find(f => f.toLowerCase().endsWith(suf)); return h ? new URL(h, dir).href : null; };
+    const shapeUrl = find('_shape.glb'), compUrl = find('_composed.glb');
+    if(!shapeUrl){ status(`no *_shape.glb in ${name}`); return; }
+    baseBeta = projectBeta(toMeters(await loadGlbVerts(shapeUrl)));   // the person's identity, as 300-d beta
+    beta = baseBeta.slice();
+    comp0 = compUrl ? toMeters(await loadGlbVerts(compUrl)) : new Float32Array(vtempl);
+    rebuildAll(); syncSliders();
+    status(`${name}: recovered ${K}-d identity — sliders/Hash drive BOTH views` + (compUrl ? '' : ' (no _composed.glb)'));
+  }catch(e){ status(`load failed for ${name}: ${e.message}`); }
+}
+
+async function listFolders(){
+  const sel = document.getElementById('folder');
+  try{
+    const hrefs = await listDir(OUT);
+    const folders = hrefs
+      .filter(h => h.endsWith('/') && !h.startsWith('?') && !h.startsWith('/') && h !== '../')
+      .map(h => ({href:h, name:decodeURIComponent(h.replace(/\/$/,''))}))
+      .sort((a,b)=> a.name.localeCompare(b.name));
+    if(!folders.length){ status('no folders under local/out/ — run local/run.py, then reload.'); return; }
+    sel.innerHTML='';
+    for(const f of folders){ const o=document.createElement('option'); o.value=f.href; o.textContent=f.name; sel.append(o); }
+    sel.onchange = () => loadFolder(sel.value, sel.selectedOptions[0].textContent);
+    await loadFolder(folders[0].href, folders[0].name);      // auto-load the first
+  }catch(e){
+    status('could not read local/out/ (' + e.message +
+           '). Serve from the repo ROOT: `python3 -m http.server 8080`, then open /viewer/studio.html');
+  }
+}
+
+(async function main(){
+  try{
+    await loadBasis();
+    viewS = makeView(document.getElementById('viewShape'), posS);
+    viewC = makeView(document.getElementById('viewComp'),  posC);
+    renderLoop();
+    buildSliders();
+    await listInputs();
+    await loadCrops();
+    await listFolders();
+  }catch(e){
+    status('failed to load FLAME basis — run tools/export_flame_basis.py and serve over http (not file://): '+e.message);
+  }
+})();
+
+document.getElementById('hash').onclick  = applyHash;
+document.getElementById('rand').onclick  = randomize;
+document.getElementById('reset').onclick = reset;
+</script>
+</body>
+</html>

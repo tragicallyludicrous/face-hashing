@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Face Hashing — Stage 1 viewer</title>
+  <title>Face Hashing — output viewer</title>
   <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
   <style>
     body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #eee; }
@@ -21,8 +21,8 @@
 </head>
 <body>
   <main>
-    <h1>Face Hashing — Stage 1</h1>
-    <label for="model-select">Model:</label>
+    <h1>Face Hashing — output viewer</h1>
+    <label for="model-select">Mesh (local/out):</label>
     <select id="model-select"></select>
     <model-viewer
       id="viewer"
@@ -41,8 +41,8 @@
     const status = document.getElementById('status');
 
     // Keep the viewpoint fixed across model switches so faces compare at the same angle.
-    // (The mesh's own orientation still depends on how it was exported — use neutral .glbs,
-    //  e.g. a neutral export from mica_local, for a true apples-to-apples shape comparison.)
+    // (<stem>_shape.glb is the neutral/un-posed identity; <stem>_composed.glb carries the photo's
+    //  expression+pose — so the shape ones are the apples-to-apples identity comparison.)
     let savedOrbit = null;
     viewer.addEventListener('camera-change', () => { savedOrbit = viewer.getCameraOrbit(); });
     viewer.addEventListener('load', () => {
@@ -53,37 +53,51 @@
     });
     sel.addEventListener('change', e => { viewer.src = e.target.value; });
 
-    // Auto-discover every .glb in models/ by parsing the directory listing the static server
-    // returns. Works whether the server emits relative ("foo.glb") or absolute
-    // ("/viewer/models/foo.glb") hrefs — we resolve each against the models/ base URL.
+    // Read the pipeline outputs straight from local/out (a sibling of viewer/), so you don't have to
+    // copy .glbs anywhere. local/out is nested (out/<stem>/<stem>_{shape,composed}.glb), so we walk
+    // the static server's directory listings recursively. REQUIRES serving from the repo ROOT:
+    //   python3 -m http.server 8080      # then open http://localhost:8080/viewer/
+    const OUT = new URL('../local/out/', location.href);   // out/ lives next to viewer/
+
+    async function listDir(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+      return [...doc.querySelectorAll('a')].map(a => a.getAttribute('href')).filter(Boolean);
+    }
+
+    async function collectGlbs(url, depth, acc) {
+      if (depth > 4) return;                                // guard against deep/looping trees
+      let hrefs;
+      try { hrefs = await listDir(url); } catch { return; }
+      for (const h of hrefs) {
+        if (h.startsWith('?') || h.startsWith('/') || h === '../') continue;   // sort/parent links
+        if (h.toLowerCase().endsWith('.glb')) acc.push(new URL(h, url).href);
+        else if (h.endsWith('/')) await collectGlbs(new URL(h, url), depth + 1, acc);
+      }
+    }
+
     async function loadModelList() {
       try {
-        const base = new URL('models/', location.href);   // absolute URL of the models dir
-        const res = await fetch(base);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const html = await res.text();
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-        const hrefs = [...doc.querySelectorAll('a')]
-          .map(a => a.getAttribute('href'))
-          .filter(h => h && h.toLowerCase().endsWith('.glb'))
-          .sort();                                  // keeps <name> and <name>_tweaked adjacent
-        if (!hrefs.length) {
-          status.textContent = 'No .glb files in viewer/models/ — copy one in and reload.';
+        const acc = [];
+        await collectGlbs(OUT, 0, acc);
+        acc.sort();                                  // groups each stem's _composed and _shape together
+        if (!acc.length) {
+          status.textContent = 'No .glb under local/out/ — run the pipeline (local/run.py), then reload.';
           return;
         }
         sel.innerHTML = '';
-        for (const href of hrefs) {
+        for (const href of acc) {
           const opt = document.createElement('option');
-          opt.value = new URL(href, base).href;     // resolves relative OR absolute hrefs correctly
-          const name = decodeURIComponent(href.split('/').pop());  // filename only, for the label
-          opt.textContent = name.replace(/\.glb$/i, '');
+          opt.value = href;
+          opt.textContent = decodeURIComponent(href.split('/').pop()).replace(/\.glb$/i, '');
           sel.appendChild(opt);
         }
-        viewer.src = sel.value;                     // load the first
-        status.textContent = hrefs.length + ' model(s) found.';
+        viewer.src = sel.value;                      // load the first
+        status.textContent = acc.length + ' mesh(es) in local/out/.';
       } catch (err) {
-        status.textContent = 'Could not list models/ (' + err.message +
-          '). Serve over http — `cd viewer && python3 -m http.server 8080` — not file://.';
+        status.textContent = 'Could not read local/out/ (' + err.message +
+          '). Serve from the repo ROOT — `python3 -m http.server 8080`, then open /viewer/ (not file://, not from viewer/).';
       }
     }
     loadModelList();

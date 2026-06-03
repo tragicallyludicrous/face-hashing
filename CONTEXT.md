@@ -76,7 +76,7 @@ face-hashing/
 - **numpy 2.0** removed aliases (`np.float`, `np.float_`, `np.bool`, `np.Inf`, …) that FLAME's pickles and chumpy reference — restore them before importing the model source.
 - **`mica.testing = True`** — skips MICA `decode()`'s training-only `codedict['flame']` ground-truth block (the identity path is unchanged).
 - **SMIRK detector** — mediapipe's FaceLandmarker misses small-in-frame / profile faces; we fall back to MICA's antelopev2/RetinaFace to locate the face, then re-run mediapipe on a padded crop (native crop framing preserved).
-- **Viewer** — `<model-viewer>` can't load `.glb` over `file://`; serve over HTTP. The exported FLAME basis under `viewer/flame/` is license-gated — keep it local, don't commit or serve publicly.
+- **Viewer** — serve from the **repo root** (`python3 -m http.server 8080`, open `/viewer/`): `index.html` auto-lists/loads the meshes in `local/out/` (a sibling of `viewer/`), and `<model-viewer>` can't load `.glb` over `file://`. The exported FLAME basis under `viewer/flame/` is license-gated — keep it local, don't commit or serve publicly.
 
 ## Design decisions
 
