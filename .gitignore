@@ -16,6 +16,8 @@ local/in/
 local/out*/
 # scraped celebrity faces + review sheets/grids (copyrighted; tools/fetch_faces.py)
 local/fetch*/
+# bridge conditioning maps (depth/mask/normal) — derive from personal/copyrighted photos
+local/bridge_test/
 local/arcface_tmp/
 local/temp.py
 
@@ -31,3 +33,4 @@ __pycache__/
 *.pyc
 .venv/
 *.zip
+Presentation/
