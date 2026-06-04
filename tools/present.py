@@ -243,9 +243,14 @@ def compare(root, candidates, label, source):
     plt.figure(figsize=(6.5, 5.5))
     plt.imshow(D, cmap="magma")
     plt.colorbar(label="cosine distance (dark = same identity)")
-    plt.xticks(range(len(stems)), stems, rotation=90, fontsize=7)
-    plt.yticks(range(len(stems)), stems, fontsize=7)
-    for b in [k for k in range(1, len(persons)) if persons[k] != persons[k - 1]]:
+    # one tick per identity, centered on its block — per-photo labels are an unreadable comb at this count
+    edges = [k for k in range(1, len(persons)) if persons[k] != persons[k - 1]]
+    bounds = [0] + edges + [len(persons)]
+    centers = [(bounds[i] + bounds[i + 1] - 1) / 2 for i in range(len(bounds) - 1)]
+    names = [persons[bounds[i]].capitalize() for i in range(len(bounds) - 1)]
+    plt.xticks(centers, names, rotation=45, ha="right", fontsize=9)
+    plt.yticks(centers, names, fontsize=9)
+    for b in edges:
         plt.axhline(b - 0.5, color="w", lw=1); plt.axvline(b - 0.5, color="w", lw=1)
     plt.title(f"{label} distance — same person clusters into dark blocks")
     hm = os.path.join(FIG, f"distance_heatmap_{source}.png")

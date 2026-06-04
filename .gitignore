@@ -14,6 +14,8 @@ local/MICA/
 local/smirk/
 local/in/
 local/out*/
+# scraped celebrity faces + review sheets/grids (copyrighted; tools/fetch_faces.py)
+local/fetch*/
 local/arcface_tmp/
 local/temp.py
 
@@ -28,3 +30,4 @@ viewer/flame/
 __pycache__/
 *.pyc
 .venv/
+*.zip
