@@ -117,6 +117,7 @@ Install into the backend's `custom_nodes/` (§3). What each is for:
 | Node pack | Repo | Why |
 |---|---|---|
 | **ComfyUI_InstantID** | cubiq/ComfyUI_InstantID | Path B identity (ArcFace + IdentityNet ControlNet). |
+| **ComfyUI_FaceHash** | *this repo* `comfy/custom_nodes/ComfyUI_FaceHash` (symlink in) | **Our** node: hashes the ArcFace identity inside InstantID (`FaceHashApplyInstantID`). Needs ComfyUI_InstantID. |
 | **ComfyUI_IPAdapter_plus** | cubiq/ComfyUI_IPAdapter_plus | IP-Adapter FaceID/Plus — lighter identity + style. |
 | **comfyui_controlnet_aux** | Fannovel16/comfyui_controlnet_aux | ControlNet preprocessors (we render our own depth, but handy). |
 | **ComfyUI-Impact-Pack** | ltdrdata/ComfyUI-Impact-Pack | **FaceDetailer** + mask ops. |
@@ -136,7 +137,7 @@ Via SwarmUI's Models tab (preferred) or place files by hand into the §3 folders
 | **SDXL ControlNet — depth** | depth-sdxl `diffusion_pytorch_model.safetensors` | `Models/controlnet/` | HF `xinsir/controlnet-depth-sdxl-1.0` |
 | **SDXL ControlNet — normal** (opt.) | normal-sdxl controlnet | `Models/controlnet/` | HF |
 | **InstantID — IP-Adapter** | `ip-adapter.bin` | backend `models/instantid/` | HF `InstantX/InstantID` |
-| **InstantID — ControlNet** | `ControlNetModel/diffusion_pytorch_model.safetensors` | `Models/controlnet/` | HF `InstantX/InstantID` |
+| **InstantID — ControlNet** | `ControlNetModel/diffusion_pytorch_model.safetensors` → save as `instantid-controlnet-sdxl.safetensors` | `Models/controlnet/` | HF `InstantX/InstantID` |
 | **antelopev2 (ArcFace)** | 5 `.onnx` | backend `models/insightface/models/antelopev2/` | **copy from `~/.insightface` (§3)** |
 | **IP-Adapter FaceID (SDXL)** | `ip-adapter-faceid_sdxl.bin` + LoRA | `Models/` (ipadapter) + `Models/Lora/` | HF `h94/IP-Adapter-FaceID` |
 | **CLIP-Vision** | `CLIP-ViT-H-14` (and/or bigG) | `Models/clip_vision/` | HF |
@@ -177,23 +178,39 @@ Knobs: **ControlNet strength** (mesh authority; start 0.7), **denoise in mask** 
 face), **mask feather** (soft edge → fewer seams). Face ignores the mesh → raise strength; looks
 pasted → feather mask + a final low-denoise full-image pass.
 
-### M2 — add InstantID identity (Path B)
-Needs a **reference of the new face** (frontal render of the hashed mesh, or Arc2Face from the hashed
-`arcface`).
+### M2 — InstantID with the hashed identity (Path B) — **built**: `comfy/M2_instantid_hashed.json`
+The hash now lives in **ArcFace space**: we feed the original photo as the identity reference, and a
+custom node hashes the extracted 512-d ArcFace embedding *before* InstantID projects it — so the
+rendered face is a deterministic, different person. **Pose/expression are preserved** by passing the
+same photo as `image_kps` (keypoints are extracted, not hashed). The scene is preserved by the same
+VAE-encode + latent-noise-mask inpaint tail as M1.
 
 ```
 InstantIDModelLoader(ip-adapter.bin) ─ INSTANTID
-InstantIDFaceAnalysis(antelopev2) ─ FACE_ANALYSIS
-ControlNetLoader(instantid-controlnet) ─ CONTROL_NET
-Load Image: NEW-identity reference face ─ IMAGE
-Load Image: original photo (pose keypoints) ─ IMAGE  (optional image_kps)
-ApplyInstantID(INSTANTID, FACE_ANALYSIS, CONTROL_NET, ref IMAGE, MODEL, pos, neg, weight 0.8) → MODEL', pos', neg'
-→ same KSampler / inpaint tail as M1 (you can stack the depth ControlNet too)
+InstantIDFaceAnalysis(CPU/antelopev2) ─ FACEANALYSIS
+ControlNetLoader(instantid-controlnet-sdxl.safetensors) ─ CONTROL_NET
+Load Image: original photo ─┬─ image      (identity → HASHED in-node)
+                            ├─ image_kps  (pose/expression, untouched)
+                            └─ VAE Encode → Set Latent Noise Mask ← MASK (face mask, from bridge)
+Apply InstantID (FaceHash)[key, offset, ip_weight 0.8, cn_strength 0.8] → MODEL', pos', neg'
+KSampler(MODEL', pos', neg', masked LATENT, cfg ~4.5, denoise ~0.9, FIXED seed) → VAE Decode → Save
 ```
 
-> Advanced: InstantID/IPAdapter nodes take a *reference image* by default but can be patched to accept
-> a **precomputed ArcFace embedding** — that's how you'd feed a hashed `arcface.npy` directly. Do this
-> only after the image-reference path works.
+- **Node:** `FaceHashApplyInstantID` (category *FaceHash*), in `comfy/custom_nodes/ComfyUI_FaceHash/`
+  (symlink it into `…/ComfyUI/custom_nodes/`). It subclasses `ApplyInstantID` and, between ArcFace
+  extraction and projection, applies `arcface_keymix_v1(embed, key)` — the **same keyed signed
+  permutation** as `local/arcface_hash.py` (vendored copy, kept byte-identical). `key` selects the
+  identity; `offset` (0 = pure, reversible) adds extra scramble.
+- **Why ArcFace-space:** the transform is an orthogonal isometry on the unit sphere → every person maps
+  to cosine ≈ 0 from themselves (a new identity) while **intra/inter structure is preserved**, so the
+  same person hashes to the *same* new face across photos/poses (the consistency we want). Verified:
+  `python local/arcface_hash.py --selftest` and `--compare local/out`.
+- **Determinism:** `key` + fixed KSampler seed → same input ⇒ same output face.
+- **Debug (isolate identity):** swap `VAE Encode → Set Latent Noise Mask` for an `Empty Latent Image`
+  (1024²) and denoise 1.0 — "portrait mode" generates the hashed identity on a clean background, the
+  fastest way to judge whether the hashed face looks plausible before fighting the inpaint blend.
+- **Stack depth (later/M3):** add the depth ControlNet (`ControlNetApplyAdvanced`) for finer
+  expression than InstantID's 5-point keypoints give.
 
 ### M3 — preservation polish
 - **Mask** = the bridge's mesh-silhouette (face/head/neck) → only that region changes.
