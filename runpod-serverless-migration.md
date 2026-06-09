@@ -95,7 +95,7 @@ standardizing on the ComfyUI-native generators and dropping the envelope.
    ```bash
    cd /workspace && mkdir -p models/checkpoints models/controlnet models/instantid \
      models/insightface/models/antelopev2
-   pip install -q "huggingface_hub[hf_transfer]<1.0"; export HF_HUB_ENABLE_HF_TRANSFER=1
+   pip install -q hf_transfer; export HF_HUB_ENABLE_HF_TRANSFER=1   # accelerator only — don't touch hub here
 
    huggingface-cli download SG161222/RealVisXL_V5.0 RealVisXL_V5.0_fp16.safetensors --local-dir models/checkpoints
    mv models/checkpoints/RealVisXL_V5.0_fp16.safetensors models/checkpoints/RealVisXL_V50_fp16.safetensors
@@ -107,11 +107,34 @@ standardizing on the ComfyUI-native generators and dropping the envelope.
    huggingface-cli download DIAMONIK7777/antelopev2 --local-dir models/insightface/models/antelopev2
    ls models/insightface/models/antelopev2/*.onnx   # must list 5 files, NOT nested
    ```
-   (Note `huggingface_hub[hf_transfer]<1.0` — we pin below 1.0 deliberately; see Appendix.)
+   > This pod just **downloads files** — the version pins (`hub<1.0`/`transformers<5`) are a
+   > ComfyUI-*runtime* concern, handled in the serverless image (§3), not here. If `transformers`
+   > is preinstalled (many templates ship 5.x, which wants `hub≥1.5`), do **not** downgrade hub on
+   > this pod — just install `hf_transfer`. The fetched files are version-agnostic.
+   > (CLI is `huggingface-cli download` on hub 0.x, `hf download` on hub 1.x — same args.)
 
-Decision: **models live on the volume; ComfyUI + custom nodes live in the worker image** (§3).
-That hybrid gives you reproducible code/deps *and* a big shared model store the dev pod and
-serverless both see.
+   > **`/workspace/models` is the volume *root*, not a ComfyUI subdir.** This is intentional:
+   > the store is shared by two ComfyUIs at *different* paths (dev pod
+   > `…/runpod-slim/ComfyUI/models`, serverless `/comfyui/models`), so it can't live inside
+   > either tree. Each ComfyUI points *into* the volume root — next step.
+
+4. **Point each ComfyUI at the store** (don't move the models into a ComfyUI tree — redirect
+   the tree to the models). Symlinking the whole `models/` dir covers the custom
+   `instantid`/`insightface` folder types too, which `extra_model_paths.yaml` handles less cleanly.
+   ComfyUI's path is **template-specific** (e.g. `/workspace/ComfyUI`,
+   `/workspace/runpod-slim/ComfyUI`), so discover it rather than hardcoding:
+   ```bash
+   # DEV POD — find this template's ComfyUI, then wire its models dir to the volume root:
+   COMFY=$(dirname "$(find / -maxdepth 6 -name main.py -path '*omfy*' 2>/dev/null | head -1)")
+   echo "$COMFY"
+   rm -rf "$COMFY/models" && ln -sfn /workspace/models "$COMFY/models"
+   ```
+   On **serverless** the worker's Dockerfile already does the equivalent
+   (`ln -sfn /runpod-volume/models /comfyui/models`) — same volume, different mount point.
+
+Decision: **models live on the volume root; ComfyUI + custom nodes live in the worker image** (§3),
+each pointed at the store by a symlink. That hybrid gives you reproducible code/deps *and* one
+shared model store the dev pod and serverless both read.
 
 ---
 
@@ -188,6 +211,9 @@ When you need the **canvas** (trying nodes, debugging a graph), don't iterate on
 
 1. Spin up a **GPU pod** from the *same image* (`facehash-worker:0.1`) or a plain ComfyUI,
    with the **same network volume** attached (mounts `/workspace`).
+   > **Mount-path gotcha:** the volume mounts at **`/workspace` on a pod** but **`/runpod-volume`
+   > on serverless**. The image's baked symlink targets `/runpod-volume/models` (the serverless
+   > path), so on a *pod* re-point it once: `ln -sfn /workspace/models /comfyui/models`.
 2. Launch ComfyUI interactively, open `comfy/comfyui/*.json`, iterate.
 3. When the graph is right: `to_comfy_api.py` → push → serverless.
 4. **Stop the pod** — pods bill while running; the volume persists.
@@ -257,11 +283,17 @@ less annoying. **Use `rclone copy` (not `mount`)** on serverless/pods — RunPod
 
 ## Appendix: pinned versions & the traps we already hit
 
-- **`huggingface_hub<1.0`** — hub 1.0 was a breaking release; ComfyUI's `transformers<5` pins
-  `hub<1.0`. An unpinned `pip install` upgrades across it and crashes ComfyUI at
-  `from transformers import CLIPTokenizer`. Pinned in the Dockerfile so it can't recur.
-- **`transformers<5` / `tokenizers<0.22`** — keep the 4.x line this stack was built on; 5.x +
-  `tokenizers 0.22` pull `hub>=1.5` and reignite the conflict.
+- **The principle: `huggingface_hub` must match the `transformers` of the ComfyUI you *run*.**
+  hub 1.0 was a breaking release — `transformers 4.x` needs `hub<1.0`, `transformers 5.x` needs
+  `hub>=1.5`. Mismatches crash ComfyUI at `from transformers import CLIPTokenizer`. This cuts
+  *both* ways: a 4.x stack breaks if hub jumps to 1.x, and a 5.x stack (e.g. the `comfyui-cuda-13`
+  template, transformers 5.7.0) breaks if you downgrade hub below 1.0. Only downgrade hub on a
+  pod you actually run ComfyUI on, to match *its* transformers.
+- **The serverless worker** (`runpod/worker-comfyui`) is a **4.x stack**, so its Dockerfile pins
+  `transformers<5` + `tokenizers<0.22` + `hub<1.0` as a matched set — reproducible, can't drift.
+  Don't apply those pins to a 5.x template.
+- **Download-only pods** don't care about any of this — install `hf_transfer`, leave hub alone;
+  the fetched files are version-agnostic.
 - **mmap loader** — if you ever see `'ModelMMAP' object has no attribute 'get_file_handle'`,
   launch ComfyUI with **`--disable-mmap`** (stale `comfy_aimdo` vs core). A pinned image avoids it.
 - **antelopev2** — the 5 `.onnx` files must sit **directly** in
