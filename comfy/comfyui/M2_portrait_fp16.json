@@ -1,6 +1,6 @@
 {
-  "last_node_id": 14,
-  "last_link_id": 22,
+  "last_node_id": 12,
+  "last_link_id": 17,
   "nodes": [
     {
       "id": 1,
@@ -39,13 +39,14 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            4,
-            5
+            4
           ],
           "slot_index": 2
         }
       ],
       "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.24.0",
         "Node name for S&R": "CheckpointLoaderSimple"
       },
       "widgets_values": [
@@ -78,16 +79,18 @@
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
-            6
+            5
           ],
           "slot_index": 0
         }
       ],
       "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.24.0",
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
-        "RAW photo, a person, natural skin texture, same lighting and background, photorealistic, high detail"
+        "RAW photo, a person, natural skin texture, photorealistic, high detail"
       ]
     },
     {
@@ -116,12 +119,14 @@
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
-            7
+            6
           ],
           "slot_index": 0
         }
       ],
       "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.24.0",
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
@@ -148,9 +153,8 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            8,
-            9,
-            10
+            7,
+            8
           ],
           "slot_index": 0
         },
@@ -162,6 +166,8 @@
         }
       ],
       "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.24.0",
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
@@ -171,10 +177,10 @@
     },
     {
       "id": 5,
-      "type": "LoadImageMask",
+      "type": "InstantIDModelLoader",
       "pos": [
         40,
-        700
+        680
       ],
       "size": [
         300,
@@ -186,29 +192,29 @@
       "inputs": [],
       "outputs": [
         {
-          "name": "MASK",
-          "type": "MASK",
+          "name": "INSTANTID",
+          "type": "INSTANTID",
           "links": [
-            11,
-            12
+            9
           ],
           "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "LoadImageMask"
+        "cnr_id": "comfyui_instantid",
+        "ver": "72495e806bc2ab9c41581e15ccaa1bcf83c477e8",
+        "Node name for S&R": "InstantIDModelLoader"
       },
       "widgets_values": [
-        "zack-normal-06_mask.png",
-        "red"
+        "ip-adapter.bin"
       ]
     },
     {
       "id": 6,
-      "type": "InstantIDModelLoader",
+      "type": "InstantIDFaceAnalysis",
       "pos": [
         40,
-        880
+        800
       ],
       "size": [
         300,
@@ -220,27 +226,29 @@
       "inputs": [],
       "outputs": [
         {
-          "name": "INSTANTID",
-          "type": "INSTANTID",
+          "name": "FACEANALYSIS",
+          "type": "FACEANALYSIS",
           "links": [
-            13
+            10
           ],
           "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "InstantIDModelLoader"
+        "cnr_id": "comfyui_instantid",
+        "ver": "72495e806bc2ab9c41581e15ccaa1bcf83c477e8",
+        "Node name for S&R": "InstantIDFaceAnalysis"
       },
       "widgets_values": [
-        "ip-adapter.bin"
+        "CPU"
       ]
     },
     {
       "id": 7,
-      "type": "InstantIDFaceAnalysis",
+      "type": "ControlNetLoader",
       "pos": [
         40,
-        1000
+        920
       ],
       "size": [
         300,
@@ -252,47 +260,17 @@
       "inputs": [],
       "outputs": [
         {
-          "name": "FACEANALYSIS",
-          "type": "FACEANALYSIS",
-          "links": [
-            14
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "InstantIDFaceAnalysis"
-      },
-      "widgets_values": [
-        "CPU"
-      ]
-    },
-    {
-      "id": 8,
-      "type": "ControlNetLoader",
-      "pos": [
-        40,
-        1120
-      ],
-      "size": [
-        300,
-        120
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
           "name": "CONTROL_NET",
           "type": "CONTROL_NET",
           "links": [
-            15
+            11
           ],
           "slot_index": 0
         }
       ],
       "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.24.0",
         "Node name for S&R": "ControlNetLoader"
       },
       "widgets_values": [
@@ -300,7 +278,7 @@
       ]
     },
     {
-      "id": 9,
+      "id": 8,
       "type": "FaceHashApplyInstantID",
       "pos": [
         720,
@@ -311,28 +289,28 @@
         120
       ],
       "flags": {},
-      "order": 8,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
           "name": "instantid",
           "type": "INSTANTID",
-          "link": 13
+          "link": 9
         },
         {
           "name": "insightface",
           "type": "FACEANALYSIS",
-          "link": 14
+          "link": 10
         },
         {
           "name": "control_net",
           "type": "CONTROL_NET",
-          "link": 15
+          "link": 11
         },
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 8
+          "link": 7
         },
         {
           "name": "model",
@@ -342,22 +320,17 @@
         {
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 6
+          "link": 5
         },
         {
           "name": "negative",
           "type": "CONDITIONING",
-          "link": 7
+          "link": 6
         },
         {
           "name": "image_kps",
           "type": "IMAGE",
-          "link": 9
-        },
-        {
-          "name": "mask",
-          "type": "MASK",
-          "link": 11
+          "link": 8
         }
       ],
       "outputs": [
@@ -365,7 +338,7 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            16
+            12
           ],
           "slot_index": 0
         },
@@ -373,7 +346,7 @@
           "name": "positive",
           "type": "CONDITIONING",
           "links": [
-            17
+            13
           ],
           "slot_index": 1
         },
@@ -381,7 +354,7 @@
           "name": "negative",
           "type": "CONDITIONING",
           "links": [
-            18
+            14
           ],
           "slot_index": 2
         }
@@ -390,7 +363,7 @@
         "Node name for S&R": "FaceHashApplyInstantID"
       },
       "widgets_values": [
-        "zacks-secret",
+        "",
         0.0,
         0.8,
         0.8,
@@ -401,11 +374,47 @@
       ]
     },
     {
-      "id": 10,
-      "type": "VAEEncode",
+      "id": 9,
+      "type": "EmptyLatentImage",
       "pos": [
         720,
         120
+      ],
+      "size": [
+        300,
+        120
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            15
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.24.0",
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        512,
+        512,
+        1
+      ]
+    },
+    {
+      "id": 10,
+      "type": "KSampler",
+      "pos": [
+        1320,
+        440
       ],
       "size": [
         300,
@@ -416,14 +425,24 @@
       "mode": 0,
       "inputs": [
         {
-          "name": "pixels",
-          "type": "IMAGE",
-          "link": 10
+          "name": "model",
+          "type": "MODEL",
+          "link": 12
         },
         {
-          "name": "vae",
-          "type": "VAE",
-          "link": 4
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 13
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 14
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 15
         }
       ],
       "outputs": [
@@ -431,22 +450,32 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            19
+            16
           ],
           "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "VAEEncode"
+        "cnr_id": "comfy-core",
+        "ver": "0.24.0",
+        "Node name for S&R": "KSampler"
       },
-      "widgets_values": []
+      "widgets_values": [
+        42,
+        "fixed",
+        30,
+        4.5,
+        "dpmpp_2m",
+        "karras",
+        1.0
+      ]
     },
     {
       "id": 11,
-      "type": "SetLatentNoiseMask",
+      "type": "VAEDecode",
       "pos": [
-        1050,
-        120
+        1660,
+        440
       ],
       "size": [
         300,
@@ -459,112 +488,12 @@
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 19
-        },
-        {
-          "name": "mask",
-          "type": "MASK",
-          "link": 12
-        }
-      ],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "links": [
-            20
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "SetLatentNoiseMask"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 12,
-      "type": "KSampler",
-      "pos": [
-        1320,
-        440
-      ],
-      "size": [
-        300,
-        120
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
           "link": 16
-        },
-        {
-          "name": "positive",
-          "type": "CONDITIONING",
-          "link": 17
-        },
-        {
-          "name": "negative",
-          "type": "CONDITIONING",
-          "link": 18
-        },
-        {
-          "name": "latent_image",
-          "type": "LATENT",
-          "link": 20
-        }
-      ],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "links": [
-            21
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "KSampler"
-      },
-      "widgets_values": [
-        42,
-        "fixed",
-        30,
-        4.5,
-        "dpmpp_2m",
-        "karras",
-        0.9
-      ]
-    },
-    {
-      "id": 13,
-      "type": "VAEDecode",
-      "pos": [
-        1660,
-        440
-      ],
-      "size": [
-        300,
-        120
-      ],
-      "flags": {},
-      "order": 12,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "link": 21
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 5
+          "link": 4
         }
       ],
       "outputs": [
@@ -572,18 +501,20 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            22
+            17
           ],
           "slot_index": 0
         }
       ],
       "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.24.0",
         "Node name for S&R": "VAEDecode"
       },
       "widgets_values": []
     },
     {
-      "id": 14,
+      "id": 12,
       "type": "SaveImage",
       "pos": [
         1660,
@@ -594,21 +525,23 @@
         120
       ],
       "flags": {},
-      "order": 13,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 22
+          "link": 17
         }
       ],
       "outputs": [],
       "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.24.0",
         "Node name for S&R": "SaveImage"
       },
       "widgets_values": [
-        "facehash_M2"
+        "facehash_M2_portrait"
       ]
     }
   ],
@@ -617,7 +550,7 @@
       1,
       1,
       0,
-      9,
+      8,
       4,
       "MODEL"
     ],
@@ -641,124 +574,100 @@
       4,
       1,
       2,
-      10,
+      11,
       1,
       "VAE"
     ],
     [
       5,
-      1,
-      2,
-      13,
-      1,
-      "VAE"
-    ],
-    [
-      6,
       2,
       0,
-      9,
+      8,
       5,
       "CONDITIONING"
     ],
     [
-      7,
+      6,
       3,
       0,
-      9,
+      8,
       6,
       "CONDITIONING"
+    ],
+    [
+      7,
+      4,
+      0,
+      8,
+      3,
+      "IMAGE"
     ],
     [
       8,
       4,
       0,
-      9,
-      3,
-      "IMAGE"
-    ],
-    [
-      9,
-      4,
-      0,
-      9,
+      8,
       7,
       "IMAGE"
     ],
     [
-      10,
-      4,
-      0,
-      10,
-      0,
-      "IMAGE"
-    ],
-    [
-      11,
+      9,
       5,
       0,
-      9,
       8,
-      "MASK"
-    ],
-    [
-      12,
-      5,
-      0,
-      11,
-      1,
-      "MASK"
-    ],
-    [
-      13,
-      6,
-      0,
-      9,
       0,
       "INSTANTID"
     ],
     [
-      14,
-      7,
+      10,
+      6,
       0,
-      9,
+      8,
       1,
       "FACEANALYSIS"
     ],
     [
-      15,
-      8,
+      11,
+      7,
       0,
-      9,
+      8,
       2,
       "CONTROL_NET"
     ],
     [
-      16,
-      9,
-      0,
       12,
+      8,
+      0,
+      10,
       0,
       "MODEL"
     ],
     [
-      17,
-      9,
+      13,
+      8,
       1,
-      12,
+      10,
       1,
       "CONDITIONING"
     ],
     [
-      18,
-      9,
+      14,
+      8,
       2,
-      12,
+      10,
       2,
       "CONDITIONING"
     ],
     [
-      19,
+      15,
+      9,
+      0,
+      10,
+      3,
+      "LATENT"
+    ],
+    [
+      16,
       10,
       0,
       11,
@@ -766,26 +675,10 @@
       "LATENT"
     ],
     [
-      20,
+      17,
       11,
       0,
       12,
-      3,
-      "LATENT"
-    ],
-    [
-      21,
-      12,
-      0,
-      13,
-      0,
-      "LATENT"
-    ],
-    [
-      22,
-      13,
-      0,
-      14,
       0,
       "IMAGE"
     ]
@@ -793,5 +686,7 @@
   "groups": [],
   "config": {},
   "extra": {},
-  "version": 0.4
+  "version": 0.4,
+  "id": "b5e12ec0-a4e9-481f-89e8-9dd864ea7dad",
+  "revision": 0
 }

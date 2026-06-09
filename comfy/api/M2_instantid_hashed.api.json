@@ -1,0 +1,226 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "RealVisXL_V50_fp16.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "CheckpointLoaderSimple"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "RAW photo, a person, natural skin texture, same lighting and background, photorealistic, high detail"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIPTextEncode"
+    }
+  },
+  "3": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "cartoon, cgi, 3d render, illustration, painting, drawing, blurry, deformed, disfigured, plastic skin"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIPTextEncode"
+    }
+  },
+  "4": {
+    "inputs": {
+      "image": "zack-normal-06.jpeg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "LoadImage"
+    }
+  },
+  "5": {
+    "inputs": {
+      "image": "zack-normal-06_mask.png",
+      "channel": "red"
+    },
+    "class_type": "LoadImageMask",
+    "_meta": {
+      "title": "LoadImageMask"
+    }
+  },
+  "6": {
+    "inputs": {
+      "instantid_file": "ip-adapter.bin"
+    },
+    "class_type": "InstantIDModelLoader",
+    "_meta": {
+      "title": "InstantIDModelLoader"
+    }
+  },
+  "7": {
+    "inputs": {
+      "provider": "CPU"
+    },
+    "class_type": "InstantIDFaceAnalysis",
+    "_meta": {
+      "title": "InstantIDFaceAnalysis"
+    }
+  },
+  "8": {
+    "inputs": {
+      "control_net_name": "instantid-controlnet-sdxl.safetensors"
+    },
+    "class_type": "ControlNetLoader",
+    "_meta": {
+      "title": "ControlNetLoader"
+    }
+  },
+  "9": {
+    "inputs": {
+      "instantid": [
+        "6",
+        0
+      ],
+      "insightface": [
+        "7",
+        0
+      ],
+      "control_net": [
+        "8",
+        0
+      ],
+      "image": [
+        "4",
+        0
+      ],
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "image_kps": [
+        "4",
+        0
+      ],
+      "mask": [
+        "5",
+        0
+      ],
+      "key": "zacks-secret",
+      "offset": 0.0,
+      "ip_weight": 0.8,
+      "cn_strength": 0.8,
+      "start_at": 0.0,
+      "end_at": 1.0,
+      "noise": 0.0,
+      "combine_embeds": "average"
+    },
+    "class_type": "FaceHashApplyInstantID",
+    "_meta": {
+      "title": "FaceHashApplyInstantID"
+    }
+  },
+  "10": {
+    "inputs": {
+      "pixels": [
+        "4",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAEEncode"
+    }
+  },
+  "11": {
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "mask": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "SetLatentNoiseMask",
+    "_meta": {
+      "title": "SetLatentNoiseMask"
+    }
+  },
+  "12": {
+    "inputs": {
+      "model": [
+        "9",
+        0
+      ],
+      "positive": [
+        "9",
+        1
+      ],
+      "negative": [
+        "9",
+        2
+      ],
+      "latent_image": [
+        "11",
+        0
+      ],
+      "seed": 42,
+      "steps": 30,
+      "cfg": 4.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.9
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "13": {
+    "inputs": {
+      "samples": [
+        "12",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAEDecode"
+    }
+  },
+  "14": {
+    "inputs": {
+      "images": [
+        "13",
+        0
+      ],
+      "filename_prefix": "facehash_M2"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "SaveImage"
+    }
+  }
+}

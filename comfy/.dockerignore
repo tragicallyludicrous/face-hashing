@@ -1,0 +1,10 @@
+# Keep the Docker build context lean — only the node + Dockerfile are needed.
+**/__pycache__
+*.pyc
+*.zip
+comfyui/
+api/
+M1_*.json
+M2_*.json
+build_*.py
+to_*.py
