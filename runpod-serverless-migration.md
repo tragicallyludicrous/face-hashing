@@ -143,9 +143,10 @@ shared model store the dev pod and serverless both read.
 This is the step that ends the dependency-hell. Everything is pinned at build time.
 
 The files already live in the repo: **`comfy/serverless/Dockerfile`** and
-**`comfy/serverless/send.py`**. Fill in the `<tag>` (a current
-[worker-comfyui tag](https://hub.docker.com/r/runpod/worker-comfyui/tags)) and your Docker Hub
-user, then build **from `comfy/`** so the context can see `custom_nodes/ComfyUI_FaceHash`:
+**`comfy/serverless/send.py`**. The base tag is set to a current `-base` variant
+(`runpod/worker-comfyui:5.8.5-base` — clean ComfyUI, no models; bump via the
+[tags page](https://hub.docker.com/r/runpod/worker-comfyui/tags)). Set your Docker Hub user,
+then build **from `comfy/`** so the context can see `custom_nodes/ComfyUI_FaceHash`:
 
 ```bash
 cd "<repo>/comfy"
@@ -153,14 +154,22 @@ docker build -f serverless/Dockerfile -t <your-dockerhub-user>/facehash-worker:0
 docker push <your-dockerhub-user>/facehash-worker:0.1
 ```
 
-The Dockerfile is `FROM runpod/worker-comfyui:<tag>` + pinned deps
-(`huggingface_hub<1.0`, `transformers<5`, `tokenizers<0.22`, insightface, onnxruntime) +
-`ComfyUI_InstantID` (cloned) + `ComfyUI_FaceHash` (copied) + a symlink of `/comfyui/models`
-to the volume. A `comfy/.dockerignore` keeps the context lean.
+The Dockerfile is `FROM runpod/worker-comfyui:5.8.5-base` + `ComfyUI_InstantID` (cloned, its
+`requirements.txt` installed → insightface/onnxruntime) + `ComfyUI_FaceHash` (copied) +
+a `/comfyui/models` symlink to the volume. It deliberately **does not** re-pin
+torch/transformers/huggingface_hub — the base image already ships a self-consistent set, and
+overriding it is what causes drift. (FaceHash is numpy-only; nothing extra needed.)
+A `comfy/.dockerignore` keeps the context lean.
 
+> **Apple Silicon:** the base is **amd64-only** (RunPod is x86), so the Dockerfile pins
+> `FROM --platform=linux/amd64`. On an M-series Mac it builds under emulation — slower, but the
+> deps install from x86_64 wheels (no compile). The image must be amd64 to run on RunPod.
+> If local emulation is too slow, let RunPod build from your GitHub repo instead, or build on an
+> amd64 pod.
+>
 > No Docker locally? RunPod can build from a GitHub repo, or you can build on a throwaway pod.
-> Verify the worker's ComfyUI path (`/comfyui` vs `/workspace/ComfyUI`) for your base tag and
-> adjust the models symlink in the Dockerfile if needed.
+> Verify the worker's ComfyUI path (`/comfyui` for these tags) and adjust the models symlink if
+> a future base tag changes it.
 
 ---
 
@@ -289,9 +298,11 @@ less annoying. **Use `rclone copy` (not `mount`)** on serverless/pods — RunPod
   *both* ways: a 4.x stack breaks if hub jumps to 1.x, and a 5.x stack (e.g. the `comfyui-cuda-13`
   template, transformers 5.7.0) breaks if you downgrade hub below 1.0. Only downgrade hub on a
   pod you actually run ComfyUI on, to match *its* transformers.
-- **The serverless worker** (`runpod/worker-comfyui`) is a **4.x stack**, so its Dockerfile pins
-  `transformers<5` + `tokenizers<0.22` + `hub<1.0` as a matched set — reproducible, can't drift.
-  Don't apply those pins to a 5.x template.
+- **The serverless worker** (`runpod/worker-comfyui:*-base`) already ships a self-consistent
+  torch/transformers/huggingface_hub set. The Dockerfile **adds only InstantID's deps** and
+  leaves that stack alone — overriding a clean pinned base is what causes drift, not what
+  prevents it. (Earlier drafts pinned `transformers<5`/`hub<1.0` here; that was wrong for this
+  base and has been removed.)
 - **Download-only pods** don't care about any of this — install `hf_transfer`, leave hub alone;
   the fetched files are version-agnostic.
 - **mmap loader** — if you ever see `'ModelMMAP' object has no attribute 'get_file_handle'`,
