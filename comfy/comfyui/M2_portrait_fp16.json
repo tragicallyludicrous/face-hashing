@@ -90,7 +90,7 @@
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
-        "RAW photo, a person, natural skin texture, photorealistic, high detail"
+        "RAW photo, a person, natural skin texture, photorealistic, high detail, softly lit studio background"
       ]
     },
     {
@@ -365,11 +365,11 @@
       "widgets_values": [
         "",
         0.0,
-        0.8,
-        0.8,
         0.0,
         1.0,
         0.0,
+        1.0,
+        0.6,
         "average"
       ]
     },
@@ -404,8 +404,8 @@
         "Node name for S&R": "EmptyLatentImage"
       },
       "widgets_values": [
-        512,
-        512,
+        1024,
+        1024,
         1
       ]
     },
@@ -687,6 +687,6 @@
   "config": {},
   "extra": {},
   "version": 0.4,
-  "id": "b5e12ec0-a4e9-481f-89e8-9dd864ea7dad",
+  "id": "4c0bc456-8026-40ad-a5c6-3f87a699d3b7",
   "revision": 0
 }

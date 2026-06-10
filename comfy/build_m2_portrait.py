@@ -1,8 +1,8 @@
 """Builder for M2_portrait_fp16.json — the fast identity-baseline workflow.
 
-Portrait variant of M2: txt2img (EmptyLatentImage 512x512, fp16) instead of the
-1550x1550 inpaint, so it's quick on MPS and isolates the *face InstantID builds*
-with no inpaint-blend confound.
+Portrait variant of M2: txt2img (EmptyLatentImage 1024x1024, fp16) instead of the
+1550x1550 inpaint, so it's quicker and isolates the *face InstantID builds* with no
+inpaint-blend confound. (1024 matters — InstantID identity is weak at 512.)
 
   LoadImage(photo) ─┬─ image      (identity → FaceHashApplyInstantID)
                     └─ image_kps  (pose/keypoints, untouched)
@@ -24,7 +24,7 @@ import pathlib
 NODES = [
     ("CheckpointLoaderSimple", ["RealVisXL_V50_fp16.safetensors"], [],
      [("MODEL", "MODEL"), ("CLIP", "CLIP"), ("VAE", "VAE")], [40, 40]),
-    ("CLIPTextEncode", ["RAW photo, a person, natural skin texture, photorealistic, high detail"],
+    ("CLIPTextEncode", ["RAW photo, a person, natural skin texture, photorealistic, high detail, softly lit studio background"],
      [("clip", "CLIP")], [("CONDITIONING", "CONDITIONING")], [360, 40]),
     ("CLIPTextEncode", ["cartoon, cgi, 3d render, illustration, painting, drawing, blurry, deformed, disfigured, plastic skin"],
      [("clip", "CLIP")], [("CONDITIONING", "CONDITIONING")], [360, 240]),
@@ -35,13 +35,15 @@ NODES = [
     ("ControlNetLoader", ["instantid-controlnet-sdxl.safetensors"], [],
      [("CONTROL_NET", "CONTROL_NET")], [40, 920]),
     # key="" → identity passthrough (baseline). Set a key in SwarmUI to hash.
+    # ip_weight=0 → IP-Adapter off; identity rides entirely on the IdentityNet ControlNet
+    # (cn_strength=1.0), which still consumes the (hashable) ArcFace embedding. noise=0.6 de-burns.
     ("FaceHashApplyInstantID",
-     ["", 0.0, 0.8, 0.8, 0.0, 1.0, 0.0, "average"],
+     ["", 0.0, 0.0, 1.0, 0.0, 1.0, 0.6, "average"],
      [("instantid", "INSTANTID"), ("insightface", "FACEANALYSIS"), ("control_net", "CONTROL_NET"),
       ("image", "IMAGE"), ("model", "MODEL"), ("positive", "CONDITIONING"), ("negative", "CONDITIONING"),
       ("image_kps", "IMAGE")],
      [("MODEL", "MODEL"), ("positive", "CONDITIONING"), ("negative", "CONDITIONING")], [720, 440]),
-    ("EmptyLatentImage", [512, 512, 1], [], [("LATENT", "LATENT")], [720, 120]),
+    ("EmptyLatentImage", [1024, 1024, 1], [], [("LATENT", "LATENT")], [720, 120]),
     ("KSampler", [42, "fixed", 30, 4.5, "dpmpp_2m", "karras", 1.0],
      [("model", "MODEL"), ("positive", "CONDITIONING"), ("negative", "CONDITIONING"), ("latent_image", "LATENT")],
      [("LATENT", "LATENT")], [1320, 440]),

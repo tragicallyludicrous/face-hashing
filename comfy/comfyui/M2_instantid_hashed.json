@@ -408,11 +408,11 @@
       "widgets_values": [
         "zacks-secret",
         0.0,
-        0.8,
-        0.8,
         0.0,
         1.0,
         0.0,
+        1.0,
+        0.6,
         "average"
       ]
     },
@@ -820,6 +820,6 @@
   "config": {},
   "extra": {},
   "version": 0.4,
-  "id": "780c4869-e462-4853-b020-0515439cfff6",
+  "id": "94b9e82c-3b2b-49f0-bf4c-0fee38633cd9",
   "revision": 0
 }

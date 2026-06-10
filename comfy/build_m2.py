@@ -29,8 +29,10 @@ NODES = [
     ("InstantIDFaceAnalysis", ["CPU"], [], [("FACEANALYSIS", "FACEANALYSIS")], [40, 1000]),
     ("ControlNetLoader", ["instantid-controlnet-sdxl.safetensors"], [],
      [("CONTROL_NET", "CONTROL_NET")], [40, 1120]),
+    # InstantID weights inherited from the tuned portrait baseline (ip_weight 0 / cn 1.0 / noise 0.6);
+    # the inpaint context (denoise 0.9, masked) may want its own pass later.
     ("FaceHashApplyInstantID",
-     ["zacks-secret", 0.0, 0.8, 0.8, 0.0, 1.0, 0.0, "average"],
+     ["zacks-secret", 0.0, 0.0, 1.0, 0.0, 1.0, 0.6, "average"],
      [("instantid", "INSTANTID"), ("insightface", "FACEANALYSIS"), ("control_net", "CONTROL_NET"),
       ("image", "IMAGE"), ("model", "MODEL"), ("positive", "CONDITIONING"), ("negative", "CONDITIONING"),
       ("image_kps", "IMAGE"), ("mask", "MASK")],
