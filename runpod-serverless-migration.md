@@ -242,17 +242,23 @@ FaceHash node in place). To change the *default* baked into the workflow, edit `
 
 When you need the **canvas** (trying nodes, debugging a graph), don't iterate on serverless:
 
-1. Spin up a **GPU pod** from the *same image* (`facehash-worker:0.1`) or a plain ComfyUI,
-   with the **same network volume** attached (mounts `/workspace`).
-   > **Mount-path gotcha:** the volume mounts at **`/workspace` on a pod** but **`/runpod-volume`
-   > on serverless**. The image's baked symlink targets `/runpod-volume/models` (the serverless
-   > path), so on a *pod* re-point it once: `ln -sfn /workspace/models /comfyui/models`.
-2. Launch ComfyUI interactively, open `comfy/comfyui/*.json`, iterate.
-3. When the graph is right: `to_comfy_api.py` → push → serverless.
-4. **Stop the pod** — pods bill while running; the volume persists.
+1. Spin up a **GPU pod** (a ComfyUI template, or the `facehash-worker:0.1` image) with the
+   **same network volume** attached (mounts `/workspace`).
+2. **Wire nodes + models** — run **`comfy/pod_bootstrap.sh`** (keep a copy at
+   `/workspace/pod_bootstrap.sh` so it's one command on every fresh pod). It (re)installs the
+   InstantID deps, symlinks the FaceHash node, and points ComfyUI's `models/` at the volume
+   store. Node *files* persist on the volume; the pip deps + symlinks it recreates do not.
+   > **Mount-path gotcha:** the volume is **`/workspace` on a pod** but **`/runpod-volume` on
+   > serverless** — the bootstrap symlinks the pod path; the serverless Dockerfile handles its own.
+3. Restart ComfyUI, open `comfy/comfyui/*.json`, iterate.
+4. When the graph is right: `to_comfy_api.py` → push → serverless.
+5. **Stop the pod** — pods bill while running; the volume persists.
 
-Same models, same nodes, same pins as production — the pod is just the interactive face of
-the identical stack.
+> **Fresh-pod CUDA snag:** if ComfyUI crashes with "NVIDIA driver too old," the host's driver is
+> older than the template's torch (e.g. an L4 on a CUDA-12.8 host vs a cu130 template). Swap torch:
+> `python3.12 -m pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128`.
+
+The pod is just the interactive face of the same volume-backed stack.
 
 ---
 
