@@ -9,6 +9,30 @@ worker is built from a **pinned Dockerfile**, not mutated live.
 
 ---
 
+## Which loop am I in? (read this BEFORE anything else)
+
+There are two completely different loops here. Using the wrong one is the single biggest
+time-sink, so decide first:
+
+- **🛠 BUILDING the workflow** (adding/tweaking nodes, downloading & testing models, tuning the
+  graph — *almost all of the work*): use a **persistent GPU pod + the network volume** (§6). Live
+  ComfyUI canvas; install nodes via Manager/git, pull models straight onto the volume, run, repeat.
+  **No Docker. No image rebuilds. Nothing multi-GB moves per change.** Stop the pod when idle; the
+  volume keeps everything.
+- **📦 SERVING a finished workflow** (cheap scale-to-zero inference, an always-on API): bake the
+  *stabilized* node set into the **serverless image** (§3–5). You build/push that image **rarely** —
+  only when the node/dep set changes, which by then is seldom.
+
+> Rule: **never iterate through the serverless Docker image.** The build→push (≈9 GB)→redeploy
+> cycle is a *packaging* step for a finished workflow, not a development loop. If you're still
+> changing nodes, you're in the pod loop. Sections 3–5 are a destination, not a daily routine.
+
+The **network volume** is the through-line: the models you download while iterating on the pod are
+already there when you eventually build the serverless image, so there's no migration — only the
+(by-then-stable) custom nodes + deps go into the image.
+
+---
+
 ## 0. The architecture (read this first)
 
 ```
