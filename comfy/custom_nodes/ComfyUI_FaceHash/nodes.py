@@ -116,6 +116,7 @@ class FaceHashApplyInstantID(ApplyInstantID):
                     return out
                 emb = out.detach().cpu().numpy()                   # (N, 512), RAW (InstantID-native)
                 if save_embedding_path:
+                    os.makedirs(os.path.dirname(save_embedding_path) or ".", exist_ok=True)
                     np.save(save_embedding_path, emb)
 
             if key:
