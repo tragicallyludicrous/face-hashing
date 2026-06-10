@@ -279,8 +279,20 @@ git add comfy/ && git commit -m "update workflows" && git push
 cd /workspace/face-hashing && git pull           # clone once: git clone <repo-url> first
 ```
 
-Symlink the node from the cloned repo so edits flow with `git pull`:
-`ln -s /workspace/face-hashing/comfy/custom_nodes/ComfyUI_FaceHash /comfyui/custom_nodes/`.
+**Pod credential (once, persists on the volume):** to push/pull the private repo from the pod,
+cache a GitHub **PAT**:
+```bash
+git config --global credential.helper store      # then the next `git pull` prompts for
+                                                 # username + PAT and caches it on the volume
+```
+(Plaintext PAT on your own volume is a mild risk; fine for a personal box. A read-only deploy
+key is the stricter alternative.)
+
+**Canvas workflows round-trip via git** because `pod_bootstrap.sh` symlinks ComfyUI's
+`user/default/workflows/` to the repo's `comfy/workflows/`. So **Save** in the canvas writes
+into the repo → `git add . && git commit && git push` → a fresh pod's `git pull` repopulates the
+sidebar. (The `comfy/comfyui/` JSONs stay generator-owned — don't hand-edit those.) The bootstrap
+also symlinks the FaceHash node from the cloned repo, so node edits flow with `git pull` too.
 
 ### b) Models → **pull from HuggingFace on the volume** (don't sync from home)
 

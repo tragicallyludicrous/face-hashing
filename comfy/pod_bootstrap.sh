@@ -22,9 +22,12 @@ COMFY=$(readlink "/proc/$PID/cwd" 2>/dev/null || echo /workspace/runpod-slim/Com
 PY=$(readlink "/proc/$PID/exe" 2>/dev/null || echo /usr/bin/python3.12)
 echo "ComfyUI: $COMFY   python: $PY"
 
-# 1. InstantID node (clone only if the volume copy is gone) + its deps (always: container-ephemeral)
-[ -d "$COMFY/custom_nodes/ComfyUI_InstantID" ] || \
+# 1. InstantID node + deps. Clone only if NEITHER name is present — a ComfyUI-Manager
+#    install names the folder `comfyui_instantid`, a git clone names it `ComfyUI_InstantID`;
+#    cloning a second copy would duplicate the nodes. (FaceHash imports whichever exists.)
+if [ ! -d "$COMFY/custom_nodes/ComfyUI_InstantID" ] && [ ! -d "$COMFY/custom_nodes/comfyui_instantid" ]; then
   git clone https://github.com/cubiq/ComfyUI_InstantID.git "$COMFY/custom_nodes/ComfyUI_InstantID"
+fi
 "$PY" -m pip install -q insightface onnxruntime
 
 # 2. FaceHash node (persists on the volume once present)
@@ -40,4 +43,14 @@ fi
 mkdir -p /workspace/models
 ln -sfn /workspace/models "$COMFY/models"
 
+# 4. canvas workflows <-> git: make ComfyUI's workflows dir a repo folder, so Save in the
+#    canvas writes into the repo and a fresh pod's `git pull` repopulates the sidebar.
+if [ -d /workspace/face-hashing ]; then
+  mkdir -p /workspace/face-hashing/comfy/workflows "$COMFY/user/default"
+  ln -sfn /workspace/face-hashing/comfy/workflows "$COMFY/user/default/workflows"
+fi
+
 echo "done — restart ComfyUI (Manager > Restart, or relaunch main.py) to load the nodes."
+# To push/pull the repo from the pod, set a credential ONCE (persists on the volume):
+#   git config --global credential.helper store
+#   then a `git pull` will prompt for your GitHub username + a PAT, and cache it.

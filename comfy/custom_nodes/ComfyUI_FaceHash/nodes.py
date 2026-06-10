@@ -10,6 +10,8 @@ untouched, so feeding the original photo as `image_kps` keeps pose/expression.
 Requires the sibling custom node `ComfyUI_InstantID` to be installed.
 """
 
+import glob
+import importlib
 import os
 import sys
 
@@ -21,14 +23,30 @@ _CUSTOM_NODES = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _CUSTOM_NODES not in sys.path:
     sys.path.insert(0, _CUSTOM_NODES)
 
-try:
-    import ComfyUI_InstantID.InstantID as IID
-    from ComfyUI_InstantID.InstantID import ApplyInstantID
-except Exception as exc:  # pragma: no cover - clear failure if InstantID missing
+
+def _import_instantid():
+    """InstantID's folder name varies by installer — cubiq's git clone is
+    `ComfyUI_InstantID`, a ComfyUI-Manager install is `comfyui_instantid`. Try the known
+    names, then any sibling dir that actually contains InstantID.py, and import that
+    (already-loaded) module so our monkeypatch targets the same module object."""
+    candidates = ["ComfyUI_InstantID", "comfyui_instantid"]
+    for p in glob.glob(os.path.join(_CUSTOM_NODES, "*", "InstantID.py")):
+        candidates.append(os.path.basename(os.path.dirname(p)))
+    for name in dict.fromkeys(candidates):  # dedupe, preserve order
+        try:
+            return importlib.import_module(name + ".InstantID")
+        except Exception:
+            continue
+    return None
+
+
+IID = _import_instantid()
+if IID is None:  # pragma: no cover - clear failure if InstantID missing
     raise ImportError(
-        "ComfyUI_FaceHash requires the 'ComfyUI_InstantID' custom node to be installed "
-        "alongside it in custom_nodes/."
-    ) from exc
+        "ComfyUI_FaceHash requires the InstantID custom node (cubiq/ComfyUI_InstantID) in "
+        "custom_nodes/ — folder name ComfyUI_InstantID or comfyui_instantid."
+    )
+ApplyInstantID = IID.ApplyInstantID
 
 from .facehash import arcface_keymix_v1
 
