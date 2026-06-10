@@ -77,6 +77,13 @@ class FaceHashApplyInstantID(ApplyInstantID):
             "optional": {
                 "image_kps": ("IMAGE",),
                 "mask": ("MASK",),
+                # Static-identity mode: load a stored RAW embedding (.npy) to use as the
+                # identity for ANY input image (pose still comes from the input) — this is
+                # what makes the output identity consistent across photos. Leave empty to
+                # extract identity from the input image (default). save_embedding_path
+                # captures the raw extracted embedding so you can reuse it later.
+                "embedding_path": ("STRING", {"default": ""}),
+                "save_embedding_path": ("STRING", {"default": ""}),
             },
         }
 
@@ -85,17 +92,36 @@ class FaceHashApplyInstantID(ApplyInstantID):
     FUNCTION = "apply"
     CATEGORY = "FaceHash"
 
-    def apply(self, key, offset, **kwargs):
-        # Temporarily wrap InstantID's extractor: hash the 512-d identity embedding
-        # (extract_kps=False) but leave keypoints (extract_kps=True) untouched.
+    def apply(self, key, offset, embedding_path="", save_embedding_path="", **kwargs):
+        # Wrap InstantID's extractor. Identity path (extract_kps=False): use a stored
+        # embedding if given, else the input image's; optionally save it; then hash by key.
+        # Keypoint path (extract_kps=True): always from the input image, so pose is preserved.
         orig = IID.extractFeatures
 
+        static = None
+        if embedding_path:
+            static = np.load(embedding_path).astype(np.float32)
+            if static.ndim == 1:
+                static = static[None, :]  # (512,) -> (1, 512)
+
         def patched(insightface, image, extract_kps=False):
-            out = orig(insightface, image, extract_kps=extract_kps)
-            if extract_kps or out is None or not key:
-                return out
-            arr = arcface_keymix_v1(out.detach().cpu().numpy(), key, offset)  # (N, 512)
-            return torch.from_numpy(np.ascontiguousarray(arr)).to(out.device, dtype=out.dtype)
+            if extract_kps:
+                return orig(insightface, image, extract_kps=True)  # pose/keypoints from input
+
+            if static is not None:
+                emb = np.repeat(static, image.shape[0], axis=0)    # same identity per image in batch
+            else:
+                out = orig(insightface, image, extract_kps=False)
+                if out is None:
+                    return out
+                emb = out.detach().cpu().numpy()                   # (N, 512), RAW (InstantID-native)
+                if save_embedding_path:
+                    np.save(save_embedding_path, emb)
+
+            if key:
+                emb = arcface_keymix_v1(emb, key, offset)
+            # extractFeatures returns a CPU tensor; downstream moves it to device/dtype.
+            return torch.from_numpy(np.ascontiguousarray(emb.astype(np.float32)))
 
         IID.extractFeatures = patched
         try:
