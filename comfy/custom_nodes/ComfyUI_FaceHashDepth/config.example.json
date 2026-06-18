@@ -1,0 +1,8 @@
+{
+  "python_bin": "/workspace/face-hashing/local/.venv/bin/python",
+  "local_dir": "/workspace/face-hashing/local",
+  "neutral_shape": "/workspace/face-hashing/local/neutral_shape.npy",
+  "cache_dir": "/workspace/face-hashing/local/.facehashdepth_cache",
+  "default_device": "cuda",
+  "timeout": 900
+}

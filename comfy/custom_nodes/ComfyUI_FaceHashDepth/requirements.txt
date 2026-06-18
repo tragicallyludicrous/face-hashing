@@ -1,0 +1,5 @@
+# The node itself needs only what ComfyUI already provides:
+#   numpy, torch, Pillow
+# The heavy work runs in the MICA/SMIRK subprocess env (config: python_bin), NOT here —
+# those deps (insightface, mediapipe, scikit-image, opencv, chumpy, the FLAME/MICA/SMIRK
+# checkouts + weights) belong to local/.venv, installed per the repo's local/README.md.

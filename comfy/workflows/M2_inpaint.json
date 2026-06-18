@@ -1,8 +1,8 @@
 {
   "id": "b5e12ec0-a4e9-481f-89e8-9dd864ea7dad",
   "revision": 0,
-  "last_node_id": 40,
-  "last_link_id": 40,
+  "last_node_id": 54,
+  "last_link_id": 50,
   "nodes": [
     {
       "id": 15,
@@ -252,7 +252,7 @@
           "type": "CONDITIONING",
           "slot_index": 1,
           "links": [
-            31
+            43
           ]
         },
         {
@@ -260,7 +260,7 @@
           "type": "CONDITIONING",
           "slot_index": 2,
           "links": [
-            32
+            44
           ]
         }
       ],
@@ -270,7 +270,7 @@
       "widgets_values": [
         "zack-secret",
         1,
-        0,
+        0.7,
         0.7,
         0,
         0.9,
@@ -465,12 +465,12 @@
         {
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 31
+          "link": 47
         },
         {
           "name": "negative",
           "type": "CONDITIONING",
-          "link": 32
+          "link": 48
         },
         {
           "name": "latent_image",
@@ -500,7 +500,7 @@
         4.5,
         "dpmpp_2m",
         "karras",
-        0.9
+        0.8
       ]
     },
     {
@@ -862,7 +862,8 @@
           "type": "MASK",
           "links": [
             19,
-            20
+            20,
+            42
           ]
         },
         {
@@ -909,7 +910,8 @@
           "links": [
             15,
             21,
-            38
+            38,
+            49
           ]
         },
         {
@@ -1209,6 +1211,228 @@
         false,
         false
       ]
+    },
+    {
+      "id": 51,
+      "type": "InpaintCropImproved",
+      "pos": [
+        -380,
+        40
+      ],
+      "size": [
+        357.44140625,
+        650
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 50
+        },
+        {
+          "name": "mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": 42
+        },
+        {
+          "name": "optional_context_mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "stitcher",
+          "type": "STITCHER",
+          "links": []
+        },
+        {
+          "name": "cropped_image",
+          "type": "IMAGE",
+          "links": [
+            46
+          ]
+        },
+        {
+          "name": "cropped_mask",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-inpaint-cropandstitch",
+        "ver": "3.0.12",
+        "Node name for S&R": "InpaintCropImproved"
+      },
+      "widgets_values": [
+        "bilinear",
+        "bicubic",
+        false,
+        "ensure minimum resolution",
+        1024,
+        1024,
+        16384,
+        16384,
+        true,
+        0,
+        false,
+        32,
+        0.1,
+        false,
+        1,
+        1,
+        1,
+        1,
+        1.2,
+        true,
+        512,
+        512,
+        "32",
+        "cpu (compatible)"
+      ]
+    },
+    {
+      "id": 52,
+      "type": "ControlNetLoader",
+      "pos": [
+        600,
+        -560
+      ],
+      "size": [
+        320,
+        58
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CONTROL_NET",
+          "type": "CONTROL_NET",
+          "links": [
+            45
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ControlNetLoader"
+      },
+      "widgets_values": [
+        "controlnet-depth-sdxl-1.0.safetensors"
+      ]
+    },
+    {
+      "id": 53,
+      "type": "ControlNetApplyAdvanced",
+      "pos": [
+        600,
+        -460
+      ],
+      "size": [
+        320,
+        170
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 43
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 44
+        },
+        {
+          "name": "control_net",
+          "type": "CONTROL_NET",
+          "link": 45
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 46
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            47
+          ]
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            48
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ControlNetApplyAdvanced"
+      },
+      "widgets_values": [
+        0.55,
+        0.0,
+        0.9
+      ]
+    },
+    {
+      "id": 54,
+      "type": "FaceHashDepth",
+      "pos": [
+        -690,
+        40
+      ],
+      "size": [
+        300,
+        150
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 49
+        }
+      ],
+      "outputs": [
+        {
+          "name": "depth",
+          "type": "IMAGE",
+          "links": [
+            50
+          ]
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FaceHashDepth"
+      },
+      "widgets_values": [
+        "hashed",
+        "zack-secret",
+        0.0,
+        "cuda",
+        false
+      ]
     }
   ],
   "links": [
@@ -1429,22 +1653,6 @@
       "MODEL"
     ],
     [
-      31,
-      8,
-      1,
-      10,
-      1,
-      "CONDITIONING"
-    ],
-    [
-      32,
-      8,
-      2,
-      10,
-      2,
-      "CONDITIONING"
-    ],
-    [
       33,
       10,
       0,
@@ -1507,6 +1715,78 @@
       34,
       0,
       "MASK"
+    ],
+    [
+      42,
+      34,
+      0,
+      51,
+      1,
+      "MASK"
+    ],
+    [
+      43,
+      8,
+      1,
+      53,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      44,
+      8,
+      2,
+      53,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      45,
+      52,
+      0,
+      53,
+      2,
+      "CONTROL_NET"
+    ],
+    [
+      46,
+      51,
+      1,
+      53,
+      3,
+      "IMAGE"
+    ],
+    [
+      47,
+      53,
+      0,
+      10,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      48,
+      53,
+      1,
+      10,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      49,
+      21,
+      0,
+      54,
+      0,
+      "IMAGE"
+    ],
+    [
+      50,
+      54,
+      0,
+      51,
+      0,
+      "IMAGE"
     ]
   ],
   "groups": [],
