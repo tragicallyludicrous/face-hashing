@@ -27,6 +27,11 @@
   #sliders{flex:1;overflow-y:auto;margin:.2rem 0;padding-right:4px}
   #status{color:#888;font-size:.72rem;margin-top:.5rem;min-height:1.2em}
   hr{border:none;border-top:1px solid #333;margin:.5rem 0}
+  #drophint{font-size:.66rem;color:#667;margin:-.3rem 0 .6rem}
+  #drop{display:none;position:fixed;inset:0;z-index:50;background:#000c;border:3px dashed #3f5a86;
+        align-items:center;justify-content:center}
+  #drop div{font-size:1.25rem;color:#cdd;background:#111d;padding:1rem 1.4rem;border-radius:8px;
+            text-align:center;max-width:80%;line-height:1.5;white-space:pre-line}
 </style>
 </head>
 <body>
@@ -39,6 +44,7 @@
   <div id="panel">
     <h1>Face Hashing — studio</h1>
     <select id="folder" title="a folder in local/out — loads its _shape.glb + _composed.glb"></select>
+    <div id="drophint">drag a JPEG anywhere to build a new face</div>
     <canvas id="orig" title="input photo, cropped to the head"></canvas>
     <div class="controls">
       <input id="key" type="text" value="hash-v1" title="hash key — change it to swap the hash function">
@@ -51,6 +57,7 @@
     <div id="status">loading basis…</div>
   </div>
 </div>
+<div id="drop"><div>Drop a photo to build a face</div></div>
 
 <script type="importmap">
 { "imports": {
@@ -273,7 +280,7 @@ async function loadFolder(href, name){
   }catch(e){ status(`load failed for ${name}: ${e.message}`); }
 }
 
-async function listFolders(){
+async function listFolders(preferStem){
   const sel = document.getElementById('folder');
   try{
     const hrefs = await listDir(OUT);
@@ -281,11 +288,13 @@ async function listFolders(){
       .filter(h => h.endsWith('/') && !h.startsWith('?') && !h.startsWith('/') && h !== '../')
       .map(h => ({href:h, name:decodeURIComponent(h.replace(/\/$/,''))}))
       .sort((a,b)=> a.name.localeCompare(b.name));
-    if(!folders.length){ status('no folders under local/out/ — run local/run.py, then reload.'); return; }
+    if(!folders.length){ status('no folders yet — drag a JPEG onto the page to build one.'); return; }
     sel.innerHTML='';
     for(const f of folders){ const o=document.createElement('option'); o.value=f.href; o.textContent=f.name; sel.append(o); }
     sel.onchange = () => loadFolder(sel.value, sel.selectedOptions[0].textContent);
-    await loadFolder(folders[0].href, folders[0].name);      // auto-load the first
+    let pick = folders[0];                                    // auto-load the first, or the just-built face
+    if(preferStem){ const m = folders.find(f => f.name === preferStem); if(m){ pick = m; sel.value = m.href; } }
+    await loadFolder(pick.href, pick.name);
   }catch(e){
     status('could not read local/out/ (' + e.message +
            '). Serve from the repo ROOT: `python3 -m http.server 8080`, then open /viewer/studio.html');
@@ -310,6 +319,31 @@ async function listFolders(){
 document.getElementById('hash').onclick  = applyHash;
 document.getElementById('rand').onclick  = randomize;
 document.getElementById('reset').onclick = reset;
+
+// ---------- drag-drop a photo -> run the pipeline (needs studio_server.py) ----------
+const drop = document.getElementById('drop'), dropMsg = drop.firstElementChild;
+let busy = false;
+const showDrop = (on, msg) => { drop.style.display = on ? 'flex' : 'none'; if(msg) dropMsg.textContent = msg; };
+const dismissOnClick = () => { drop.onclick = () => { showDrop(false); drop.onclick = null; }; };
+addEventListener('dragover', e => { e.preventDefault(); if(!busy) showDrop(true, 'Drop a photo to build a face'); });
+addEventListener('dragleave', e => { if(e.relatedTarget === null && !busy) showDrop(false); });
+addEventListener('drop', async e => {
+  e.preventDefault(); if(busy) return;
+  const file = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith('image/'));
+  if(!file){ showDrop(false); return; }
+  busy = true; const t0 = Date.now();
+  const tick = setInterval(()=> showDrop(true, `building “${file.name}” — ${Math.round((Date.now()-t0)/1000)}s… (~1–2 min)`), 1000);
+  showDrop(true, `building “${file.name}” …`);
+  try{
+    const r = await fetch('/api/process', { method:'POST', headers:{'X-Filename': file.name}, body: file });
+    const j = await r.json().catch(()=>({error:'bad server response — is studio_server.py running?'}));
+    clearInterval(tick);
+    if(!r.ok || j.error){ showDrop(true, 'could not build: ' + (j.error || ('HTTP '+r.status)) + '\n(click to dismiss)'); dismissOnClick(); busy = false; return; }
+    showDrop(false); busy = false;
+    status(`built ${j.stem} in ${j.seconds}s — loading…`);
+    await listFolders(j.stem);
+  }catch(err){ clearInterval(tick); showDrop(true, 'error: ' + err.message + '\nrun: python3 viewer/studio_server.py  (click to dismiss)'); dismissOnClick(); busy = false; }
+});
 </script>
 </body>
 </html>
