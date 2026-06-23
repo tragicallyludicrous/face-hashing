@@ -80,8 +80,86 @@ def arcface_unmix_v1(hashed, key: str):
     return (h[..., inv] * signs[inv]).astype(np.float32)
 
 
+# --------------------------------------------------------------------------- #
+# arcface_blend_v2 — ON-MANIFOLD identity hash (blend toward a key-selected real id)
+# --------------------------------------------------------------------------- #
+# Why this exists: arcface_keymix_v1 is a signed PERMUTATION — orthogonal, so it preserves
+# norm and the *recognition* geometry (intra/inter cosine), but it maps the real-face
+# manifold onto a DIFFERENT, permuted submanifold. A permuted real embedding is therefore
+# out-of-distribution for a *generator* (InstantID), which only ever saw on-manifold
+# embeddings in training -> some inputs render a plausible different person, others render a
+# monster. blend_v2 instead moves the input toward a REAL identity the key selects from a
+# gallery; a blend of two real faces stays near the manifold -> plausible for any input.
+# It still depends on the *input* identity (so it's a hash, not just "key picks a face"),
+# is deterministic, key-driven, and obfuscating (uninvertible without the gallery + key).
+
+
+def _keyed_target(key: str, n_gallery: int, n_mix: int = 2):
+    """Deterministic virtual-identity pick from a size-`n_gallery` gallery: choose `n_mix`
+    rows + convex (Dirichlet) weights from the key's RNG. Cross-machine stable; MUST stay
+    byte-identical to the vendored copy so geometry (MICA) and texture (InstantID) pick the
+    SAME gallery person from their respective (row-aligned) galleries under one key."""
+    seed = int.from_bytes(hashlib.sha256(("blend:" + key).encode("utf-8")).digest()[:8], "little")
+    rng = np.random.default_rng(seed)
+    n_mix = max(1, min(int(n_mix), int(n_gallery)))
+    idx = rng.choice(n_gallery, size=n_mix, replace=False)
+    w = rng.dirichlet(np.ones(n_mix)) if n_mix > 1 else np.array([1.0])
+    return idx, w
+
+
+def _slerp(a, b, t):
+    """Spherical interpolation on the unit sphere. a: (...,D); b: (D,); t scalar in [0,1].
+    Returns unit (...,D). Falls back to lerp where the two are nearly colinear."""
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    a = a / np.linalg.norm(a, axis=-1, keepdims=True)
+    b = b / np.linalg.norm(b)
+    dot = np.clip(a @ b, -1.0, 1.0)                       # (...,)
+    theta = np.arccos(dot)
+    sin = np.sin(theta)
+    safe = np.where(sin < 1e-6, 1.0, sin)
+    ca = np.where(sin < 1e-6, 1.0 - t, np.sin((1.0 - t) * theta) / safe)
+    cb = np.where(sin < 1e-6, t, np.sin(t * theta) / safe)
+    out = ca[..., None] * a + cb[..., None] * b           # cb*b broadcasts (D,) over (...,)
+    return out / np.linalg.norm(out, axis=-1, keepdims=True)
+
+
+def arcface_blend_v2(embedding, key: str, gallery, strength: float = 0.6, n_mix: int = 2):
+    """On-manifold identity hash: blend the input embedding toward a key-selected real
+    identity from `gallery` (slerp on the sphere), preserving the input's norm.
+
+    embedding : (D,) or (N,D) raw ArcFace embedding, SAME backbone/space as `gallery`.
+    gallery   : (G,D) real embeddings in that space (see build_gallery.py).
+    strength  : 0 -> original identity, 1 -> the key's virtual target. ~0.5-0.8 typical.
+    n_mix     : # gallery rows convex-mixed into the virtual target (richer id space).
+    Deterministic in (embedding, key, gallery, strength, n_mix)."""
+    e = np.asarray(embedding, dtype=np.float64)
+    G = np.asarray(gallery, dtype=np.float64)
+    if G.ndim != 2 or G.shape[-1] != e.shape[-1]:
+        raise ValueError(f"gallery {G.shape} incompatible with embedding dim {e.shape[-1]}")
+    nrm = np.linalg.norm(e, axis=-1, keepdims=True)          # keep the input's scale
+    Gn = G / np.linalg.norm(G, axis=-1, keepdims=True)
+    idx, w = _keyed_target(key, len(Gn), n_mix)
+    target = (w[:, None] * Gn[idx]).sum(0)
+    target = target / np.linalg.norm(target)                 # the virtual identity (unit)
+    out = _slerp(e, target, float(strength)) * nrm
+    return out.astype(np.float32)
+
+
+def load_gallery(path, column: str = "antelope"):
+    """Load a paired gallery: a `.npz` with row-aligned columns 'antelope' (InstantID) and
+    'mica' (depth), or a plain (G,D) `.npy`. Returns the requested column as (G,D) float64."""
+    p = str(path)
+    if p.endswith(".npz"):
+        z = np.load(p)
+        if column not in z:
+            raise KeyError(f"gallery {p} has no column {column!r}; has {list(z.keys())}")
+        return z[column].astype(np.float64)
+    return np.load(p).astype(np.float64)
+
+
 # registry hook (Stage-2 plan: hot-swappable strategies)
-TRANSFORMS = {"arcface_keymix_v1": arcface_keymix_v1}
+TRANSFORMS = {"arcface_keymix_v1": arcface_keymix_v1, "arcface_blend_v2": arcface_blend_v2}
 
 
 def cosine(a, b):
@@ -123,6 +201,25 @@ def selftest(key: str = "demo-key"):
 
     offs = arcface_keymix_v1(e, key, offset=0.3)
     print(f"  with offset=0.3: cos(e,hash) {cosine(e, offs):+.4f}, ||h||={np.linalg.norm(offs):.4f}")
+
+    # --- arcface_blend_v2: on-manifold (blend toward a key-selected real identity) ---
+    print("  --- arcface_blend_v2 (gallery blend) ---")
+    gal = rng.standard_normal((64, 512))
+    gal = gal / np.linalg.norm(gal, axis=1, keepdims=True)        # a stand-in "real-id gallery"
+    bm = lambda v, k, s=0.6: arcface_blend_v2(v, k, gal, strength=s)
+    b1, b2 = bm(e, key), bm(e, key)
+    print("  deterministic (same in twice)      :", np.allclose(b1, b2))
+    print(f"  norm preserved   ||e||={np.linalg.norm(e):.4f}  ->  ||b||={np.linalg.norm(b1):.4f}")
+    print(f"  cos(e, blend) strength 0.3/0.6/0.9 : "
+          f"{cosine(e, bm(e, key, 0.3)):+.3f} / {cosine(e, bm(e, key, 0.6)):+.3f} / {cosine(e, bm(e, key, 0.9)):+.3f}"
+          "   (input-dependent hash, decreasing)")
+    print(f"  cos(e, blend_otherkey)             : {cosine(e, bm(e, 'another-key')):+.3f}   (key-dependent)")
+    print(f"  same person stays close  cos(b,b_same) {cosine(bm(e, key), bm(e_same, key)):+.3f}  "
+          f"(orig {cosine(e, e_same):+.3f})")
+    # on-manifold check: nearest-gallery cosine, original vs blended (blend should sit nearer the gallery)
+    near = lambda v: float(np.max((gal @ (v / np.linalg.norm(v)))))
+    print(f"  nearest-gallery cos  e={near(e):+.3f} -> blend(0.9)={near(bm(e, key, 0.9)):+.3f}   "
+          "(blend pulled toward the real-id set)")
 
 
 def compare(folder: str, key: str):
@@ -171,6 +268,11 @@ def main():
     ap.add_argument("-o", "--output", help="output .npy (file) or dir")
     ap.add_argument("-k", "--key", default="demo-key")
     ap.add_argument("--offset", type=float, default=0.0)
+    ap.add_argument("--transform", choices=list(TRANSFORMS), default="arcface_keymix_v1")
+    ap.add_argument("--gallery", help="paired gallery .npz/.npy (required for arcface_blend_v2)")
+    ap.add_argument("--column", default="antelope", help="gallery column: antelope|mica (.npz)")
+    ap.add_argument("--strength", type=float, default=0.6, help="blend_v2: 0=self .. 1=target id")
+    ap.add_argument("--n-mix", type=int, default=2, help="blend_v2: # gallery rows mixed per key")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--compare", metavar="DIR", help="show intra/inter cosine before/after hashing")
     args = ap.parse_args()
@@ -184,18 +286,26 @@ def main():
     if not args.input:
         ap.error("give an input .npy/dir, or --selftest / --compare DIR")
 
+    if args.transform == "arcface_blend_v2":
+        if not args.gallery:
+            ap.error("arcface_blend_v2 needs --gallery (build one with build_gallery.py)")
+        gal = load_gallery(args.gallery, args.column)
+        apply = lambda e: arcface_blend_v2(e, args.key, gal, args.strength, args.n_mix)
+    else:
+        apply = lambda e: arcface_keymix_v1(e, args.key, args.offset)
+
     inp = pathlib.Path(args.input)
     if inp.is_dir():
         outdir = pathlib.Path(args.output or (str(inp) + "_hashed"))
         outdir.mkdir(parents=True, exist_ok=True)
         for p in sorted(inp.rglob("*arcface.npy")):
-            h = arcface_keymix_v1(np.load(p), args.key, args.offset)
+            h = apply(np.load(p))
             op = outdir / p.name.replace("arcface", "arcface_hashed")
             np.save(op, h)
             print(f"  {p.name}  cos={cosine(np.load(p), h):+.3f}  -> {op}")
     else:
         e = np.load(inp)
-        h = arcface_keymix_v1(e, args.key, args.offset)
+        h = apply(e)
         op = args.output or str(inp).replace(".npy", "_hashed.npy")
         np.save(op, h)
         print(f"  {inp.name}: cos(original, hashed) = {cosine(e, h):+.4f}  ->  {op}")

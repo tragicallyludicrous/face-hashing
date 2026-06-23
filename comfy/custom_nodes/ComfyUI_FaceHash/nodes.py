@@ -48,7 +48,7 @@ if IID is None:  # pragma: no cover - clear failure if InstantID missing
     )
 ApplyInstantID = IID.ApplyInstantID
 
-from .facehash import arcface_keymix_v1
+from .facehash import arcface_keymix_v1, arcface_blend_v2, load_gallery
 
 
 class FaceHashApplyInstantID(ApplyInstantID):
@@ -73,10 +73,19 @@ class FaceHashApplyInstantID(ApplyInstantID):
                 "end_at": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001}),
                 "noise": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1}),
                 "combine_embeds": (["average", "norm average", "concat"], {"default": "average"}),
+                # transform: keymix_v1 (signed permutation; off-manifold -> can render inhuman on
+                # some inputs) vs blend_v2 (blend toward a key-selected REAL identity from a gallery;
+                # on-manifold -> plausible for any input, and co-designs with the MICA depth path
+                # when both use the SAME key + the row-aligned gallery). See build_gallery.py.
+                "transform": (["arcface_keymix_v1", "arcface_blend_v2"], {"default": "arcface_keymix_v1"}),
+                "strength": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 1.0, "step": 0.05}),
             },
             "optional": {
                 "image_kps": ("IMAGE",),
                 "mask": ("MASK",),
+                # blend_v2 only: paired gallery .npz (uses its 'antelope' column here).
+                "gallery_path": ("STRING", {"default": ""}),
+                "n_mix": ("INT", {"default": 2, "min": 1, "max": 16}),
                 # Static-identity mode: load a stored RAW embedding (.npy) to use as the
                 # identity for ANY input image (pose still comes from the input) — this is
                 # what makes the output identity consistent across photos. Leave empty to
@@ -92,11 +101,21 @@ class FaceHashApplyInstantID(ApplyInstantID):
     FUNCTION = "apply"
     CATEGORY = "FaceHash"
 
-    def apply(self, key, offset, embedding_path="", save_embedding_path="", **kwargs):
+    def apply(self, key, offset, transform="arcface_keymix_v1", strength=0.6, gallery_path="",
+              n_mix=2, embedding_path="", save_embedding_path="", **kwargs):
         # Wrap InstantID's extractor. Identity path (extract_kps=False): use a stored
         # embedding if given, else the input image's; optionally save it; then hash by key.
         # Keypoint path (extract_kps=True): always from the input image, so pose is preserved.
         orig = IID.extractFeatures
+
+        gallery = None
+        if transform == "arcface_blend_v2":
+            if not gallery_path:
+                raise ValueError(
+                    "FaceHash: arcface_blend_v2 needs gallery_path — build one with "
+                    "local/build_gallery.py and point at the .npz (uses its 'antelope' column)."
+                )
+            gallery = load_gallery(gallery_path, "antelope")
 
         static = None
         if embedding_path:
@@ -120,7 +139,10 @@ class FaceHashApplyInstantID(ApplyInstantID):
                     np.save(save_embedding_path, emb)
 
             if key:
-                emb = arcface_keymix_v1(emb, key, offset)
+                if transform == "arcface_blend_v2":
+                    emb = arcface_blend_v2(emb, key, gallery, strength, n_mix)
+                else:
+                    emb = arcface_keymix_v1(emb, key, offset)
             # extractFeatures returns a CPU tensor; downstream moves it to device/dtype.
             return torch.from_numpy(np.ascontiguousarray(emb.astype(np.float32)))
 

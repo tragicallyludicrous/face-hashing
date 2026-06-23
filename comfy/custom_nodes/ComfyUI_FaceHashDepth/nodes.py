@@ -93,6 +93,13 @@ class FaceHashDepth:
             "optional": {
                 "device": (["cuda", "cpu", "mps"], {"default": "cuda"}),
                 "force_rerender": ("BOOLEAN", {"default": False}),
+                # MUST match the InstantID FaceHash node: same transform + key + (for blend_v2)
+                # the SAME gallery .npz so geometry (mica column) and texture (antelope column)
+                # depict the same key-selected identity. blend_v2 = on-manifold, recommended.
+                "transform": (["arcface_keymix_v1", "arcface_blend_v2"], {"default": "arcface_keymix_v1"}),
+                "gallery_path": ("STRING", {"default": ""}),
+                "strength": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 1.0, "step": 0.05}),
+                "n_mix": ("INT", {"default": 2, "min": 1, "max": 16}),
             },
         }
 
@@ -101,7 +108,8 @@ class FaceHashDepth:
     FUNCTION = "generate"
     CATEGORY = "FaceHash"
 
-    def generate(self, image, shape_source, key, offset, device="cuda", force_rerender=False):
+    def generate(self, image, shape_source, key, offset, device="cuda", force_rerender=False,
+                 transform="arcface_keymix_v1", gallery_path="", strength=0.6, n_mix=2):
         cfg = _load_config()
         local_dir = cfg["local_dir"]
         if not local_dir or not os.path.isdir(local_dir):
@@ -117,7 +125,10 @@ class FaceHashDepth:
         # ---- cache key: image bytes + the identity-defining params ----
         img_sha = hashlib.sha1((image[0].cpu().numpy() * 255).astype(np.uint8).tobytes()).hexdigest()[:16]
         if shape_source == "hashed":
-            tag = "h_%s_%+0.2f" % (_safe(key), offset)
+            if transform == "arcface_blend_v2":
+                tag = "b_%s_%s_s%0.2f_m%d" % (_safe(key), _safe(os.path.basename(gallery_path)), strength, n_mix)
+            else:
+                tag = "h_%s_%+0.2f" % (_safe(key), offset)
         else:
             tag = shape_source
         ck = "%s__%s__%s" % (img_sha, tag, dev)
@@ -140,8 +151,18 @@ class FaceHashDepth:
                 shape_arg = ["--shape", ns]
             elif shape_source == "hashed":
                 # MICA interpreter: photo + key -> hashed 300-d shape.npy
-                _run([py, "hash_shape.py", photo, "--keys", key, "--offset", str(offset),
-                      "-o", tmp, "--device", dev], cwd=local_dir, timeout=timeout)
+                cmd = [py, "hash_shape.py", photo, "--keys", key, "--offset", str(offset),
+                       "-o", tmp, "--device", dev, "--transform", transform]
+                if transform == "arcface_blend_v2":
+                    if not gallery_path:
+                        raise RuntimeError(
+                            "FaceHashDepth: arcface_blend_v2 needs gallery_path (build_gallery.py); "
+                            "use the SAME gallery as the InstantID node."
+                        )
+                    # MICA geometry path reads the gallery's 'mica' column (texture uses 'antelope')
+                    cmd += ["--gallery", gallery_path, "--column", "mica",
+                            "--strength", str(strength), "--n-mix", str(n_mix)]
+                _run(cmd, cwd=local_dir, timeout=timeout)
                 shp = glob.glob(os.path.join(tmp, "photo__*.npy"))
                 if not shp:
                     raise RuntimeError("FaceHashDepth: hash_shape produced no shape (no face?)")

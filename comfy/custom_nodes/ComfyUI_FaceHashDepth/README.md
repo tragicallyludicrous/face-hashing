@@ -25,13 +25,23 @@ it runs the two validated CLIs as subprocesses, exactly like `run.py`:
 `neutral` (the generic mean head). Results are cached by `(image, key, offset, shape_source)`, so the
 first render of a given key costs ~30–60 s and every run after is instant — including key sweeps.
 
-## ⚠️ Same key as the InstantID node
+## ⚠️ Match the InstantID node: key + transform + gallery
 
-Geometry (here) and texture (`FaceHashApplyInstantID`) are hashed with the **same** `arcface_keymix_v1`
-but on **different** backbones (MICA's ArcFace vs antelopev2), so they aren't a co-designed single face
-— but each is deterministic per key, so the combination is **consistent per key**. Set this node's
-`key` (and `offset`) to the **same values as the InstantID FaceHash node**, or geometry and texture
-drift apart.
+Geometry (here) and texture (`FaceHashApplyInstantID`) hash on **different** ArcFace backbones (MICA's
+frozen model vs antelopev2), so you can't share one raw vector. Two transforms:
+
+- **`arcface_keymix_v1`** (signed permutation): deterministic per key but **off-manifold** — InstantID
+  can render inhuman faces on some inputs, and geometry/texture are only "consistent per key", not the
+  same designed face. Set `key` + `offset` identical to the InstantID node.
+- **`arcface_blend_v2`** (recommended): blends toward a **key-selected real identity** from a *paired
+  gallery* (`build_gallery.py` → `.npz` with row-aligned `antelope` + `mica` columns). On-manifold
+  (plausible for any input) **and co-designed**: the same key picks the same gallery person in both
+  columns, so geometry and texture depict **one** synthetic identity. This node reads the `mica` column;
+  the InstantID node reads `antelope`.
+
+For `blend_v2`, set **`transform`, `key`, `gallery_path`, `strength`, and `n_mix` identical** on both
+nodes (only the gallery *column* differs, and the nodes pick that automatically). Mismatch → geometry
+and texture drift apart.
 
 ## Pod setup
 
