@@ -31,6 +31,13 @@ import os
 
 import numpy as np
 
+# Import torch BEFORE insightface/onnxruntime so torch's bundled CUDA/cuDNN libs are loaded into the
+# process first — otherwise onnxruntime-gpu can't find libcudart/libcudnn and silently falls back to CPU.
+try:
+    import torch  # noqa: F401
+except Exception:  # noqa: BLE001 — torch optional for --no-mica on CPU
+    pass
+
 EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
