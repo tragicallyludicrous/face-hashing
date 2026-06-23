@@ -133,7 +133,7 @@ def check_setup():
     ]
     missing_mods = []
     if os.path.exists(venv_py):
-        mods = ["numpy", "torch", "cv2", "insightface", "onnxruntime", "skimage", "trimesh", "chumpy", "mediapipe"]
+        mods = ["numpy", "torch", "cv2", "insightface", "onnxruntime", "skimage", "trimesh", "chumpy", "mediapipe", "timm"]
         code = "import importlib.util as u;print(' '.join(m for m in %r if u.find_spec(m) is None))" % mods
         try:
             missing_mods = subprocess.run([PY, "-c", code], capture_output=True, text=True, timeout=90).stdout.split()

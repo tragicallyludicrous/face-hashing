@@ -53,11 +53,11 @@ done
 [ -x "$VENV/bin/python" ] || { echo "-- creating $VENV"; mkdir -p "$(dirname "$VENV")"; "$CREATE_PY" -m venv $SYS_SITE "$VENV"; }
 PY="$VENV/bin/python"
 if [ -n "$BASE_PY" ]; then     # reuse: inherit torch/torchvision/numpy/cv2 from the base; install only the extras
-  DEP_PROBE='import torch,insightface,onnxruntime,trimesh,yacs,loguru,cv2,skimage,numpy,gdown,tqdm,face_alignment,mediapipe,matplotlib,chumpy'
-  PIP_PKGS="insightface onnxruntime trimesh loguru yacs scikit-image gdown tqdm face-alignment mediapipe matplotlib"
+  DEP_PROBE='import torch,insightface,onnxruntime,trimesh,timm,yacs,loguru,cv2,skimage,numpy,gdown,tqdm,face_alignment,mediapipe,matplotlib,chumpy'
+  PIP_PKGS="insightface onnxruntime trimesh timm loguru yacs scikit-image gdown tqdm face-alignment mediapipe matplotlib"
 else
-  DEP_PROBE='import torch,torchvision,insightface,onnxruntime,trimesh,yacs,loguru,cv2,skimage,numpy,gdown,tqdm,face_alignment,mediapipe,matplotlib,chumpy'
-  PIP_PKGS="torch torchvision insightface onnxruntime trimesh loguru yacs opencv-python scikit-image numpy gdown tqdm face-alignment mediapipe matplotlib"
+  DEP_PROBE='import torch,torchvision,insightface,onnxruntime,trimesh,timm,yacs,loguru,cv2,skimage,numpy,gdown,tqdm,face_alignment,mediapipe,matplotlib,chumpy'
+  PIP_PKGS="torch torchvision insightface onnxruntime trimesh timm loguru yacs opencv-python scikit-image numpy gdown tqdm face-alignment mediapipe matplotlib"
 fi
 if "$PY" -c "$DEP_PROBE" 2>/dev/null; then
   echo "-- deps already present, skipping pip"
