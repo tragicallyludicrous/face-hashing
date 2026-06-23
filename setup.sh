@@ -22,6 +22,19 @@ command -v "$PYBIN" >/dev/null || { echo "!! need Python 3.11 (set PYTHON=<your 
 "$PYBIN" -c 'import sys;assert sys.version_info[:2]==(3,11),sys.version' \
   || { echo "!! use Python 3.11 — this stack (torch/insightface/chumpy) has no wheels on 3.12+"; exit 1; }
 
+# 0) system tools some steps need: unzip (a manually-downloaded FLAME2020.zip) and wget (asset fetch).
+#    Best-effort on Debian/apt pods (you're root there) — minimal RunPod images often lack them;
+#    a no-op/warning elsewhere (macOS ships both). gdown is NOT here — it's a venv package (step 1).
+for t in unzip wget; do
+  command -v "$t" >/dev/null 2>&1 && continue
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "-- installing $t (apt)"
+    apt-get update -qq && apt-get install -y -qq "$t" || echo "  (couldn't apt-get $t — install it manually)"
+  else
+    echo "  ! '$t' missing and no apt-get — install it manually if a step needs it"
+  fi
+done
+
 # 1) venv + deps  (skip the whole pip resolve if everything already imports)
 VENV="$LOCAL/.venv"
 [ -x "$VENV/bin/python" ] || { echo "-- creating $VENV"; "$PYBIN" -m venv "$VENV"; }
@@ -50,6 +63,7 @@ SMIRK_PT="$LOCAL/smirk/pretrained_models/SMIRK_em1.pt"
 if [ ! -f "$SMIRK_PT" ]; then
   echo "-- fetching SMIRK_em1.pt"
   mkdir -p "$LOCAL/smirk/pretrained_models"
+  "$PY" -c 'import gdown' 2>/dev/null || "$PY" -m pip install -q gdown   # venv tool; self-heal old venvs
   "$PY" -m gdown --id 1T65uEd9dVLHgVw5KiUYL66NUee-MCzoE -O "$SMIRK_PT" \
     || echo "  (gdown hiccup — get SMIRK_em1.pt from SMIRK's repo into $SMIRK_PT)"
 fi
