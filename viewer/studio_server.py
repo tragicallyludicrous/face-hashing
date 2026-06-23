@@ -106,9 +106,10 @@ def check_setup():
     M = os.path.join(LOCAL, "MICA")
     S = os.path.join(LOCAL, "smirk")
     antelope = os.path.expanduser("~/.insightface/models/antelopev2")
+    venv_py = os.environ.get("FACEHASH_PY") or VENV
     items = [
-        ("Python venv (local/.venv)", os.path.exists(VENV),
-         "./setup.sh"),
+        ("Python venv", os.path.exists(venv_py),
+         "./setup.sh   (external/reuse venv? set FACEHASH_PY=/path/to/venv/bin/python)"),
         ("MICA checkout", os.path.isdir(M),
          "git clone https://github.com/Zielon/MICA.git local/MICA && python local/patch_mica_for_mac.py local/MICA"),
         ("FLAME 2020 generic_model.pkl", os.path.exists(os.path.join(M, "data/FLAME2020/generic_model.pkl")),
@@ -131,7 +132,7 @@ def check_setup():
          "local/.venv/bin/python tools/export_flame_basis.py  (needs the FLAME pkl)"),
     ]
     missing_mods = []
-    if os.path.exists(VENV):
+    if os.path.exists(venv_py):
         mods = ["numpy", "torch", "cv2", "insightface", "onnxruntime", "skimage", "trimesh", "chumpy", "mediapipe"]
         code = "import importlib.util as u;print(' '.join(m for m in %r if u.find_spec(m) is None))" % mods
         try:
@@ -145,7 +146,7 @@ def check_setup():
         if not ok:
             ok_all = False
             print(f"         -> {fix}")
-    if os.path.exists(VENV):
+    if os.path.exists(venv_py):
         if missing_mods:
             ok_all = False
             print(f"  [XX] venv packages missing: {', '.join(missing_mods)}\n         -> ./setup.sh")

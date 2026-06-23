@@ -16,11 +16,25 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"; LOCAL="$ROOT/local"
 PYBIN="${PYTHON:-python3.11}"
+BASE_PY="${FACEHASH_BASE_PY:-}"           # set => build the venv FROM this interpreter (e.g. ComfyUI's
+                                          #   /usr/bin/python3.12) with --system-site-packages, inheriting
+                                          #   its torch/numpy/cv2. Use on a network-volume (MooseFS) pod so
+                                          #   `import torch` isn't dragged file-by-file off the netvol.
+VENV="${FACEHASH_VENV:-$LOCAL/.venv}"     # venv location. Put it on LOCAL disk (e.g. FACEHASH_VENV=/opt/face-venv)
+                                          #   when local/ lives on a slow network volume.
 
 echo "== Face-Hashing studio setup (re-runnable) =="
-command -v "$PYBIN" >/dev/null || { echo "!! need Python 3.11 (set PYTHON=<your python3.11>)"; exit 1; }
-"$PYBIN" -c 'import sys;assert sys.version_info[:2]==(3,11),sys.version' \
-  || { echo "!! use Python 3.11 — this stack (torch/insightface/chumpy) has no wheels on 3.12+"; exit 1; }
+if [ -n "$BASE_PY" ]; then
+  command -v "$BASE_PY" >/dev/null 2>&1 || [ -x "$BASE_PY" ] \
+    || { echo "!! FACEHASH_BASE_PY not found: $BASE_PY"; exit 1; }
+  echo "-- reuse mode: venv $VENV from $BASE_PY (--system-site-packages; inherits torch/numpy/cv2)"
+  CREATE_PY="$BASE_PY"; SYS_SITE="--system-site-packages"
+else
+  command -v "$PYBIN" >/dev/null || { echo "!! need Python 3.11 (set PYTHON=<your python3.11>)"; exit 1; }
+  "$PYBIN" -c 'import sys;assert sys.version_info[:2]==(3,11),sys.version' \
+    || { echo "!! use Python 3.11 — this stack (torch/insightface/chumpy) has no wheels on 3.12+"; exit 1; }
+  CREATE_PY="$PYBIN"; SYS_SITE=""
+fi
 
 # 0) system tools some steps need: unzip (a manually-downloaded FLAME2020.zip) and wget (asset fetch).
 #    Best-effort on Debian/apt pods (you're root there) — minimal RunPod images often lack them;
@@ -36,17 +50,21 @@ for t in unzip wget; do
 done
 
 # 1) venv + deps  (skip the whole pip resolve if everything already imports)
-VENV="$LOCAL/.venv"
-[ -x "$VENV/bin/python" ] || { echo "-- creating $VENV"; "$PYBIN" -m venv "$VENV"; }
+[ -x "$VENV/bin/python" ] || { echo "-- creating $VENV"; mkdir -p "$(dirname "$VENV")"; "$CREATE_PY" -m venv $SYS_SITE "$VENV"; }
 PY="$VENV/bin/python"
-DEP_PROBE='import torch,torchvision,insightface,onnxruntime,trimesh,yacs,loguru,cv2,skimage,numpy,gdown,tqdm,face_alignment,mediapipe,matplotlib,chumpy'
+if [ -n "$BASE_PY" ]; then     # reuse: inherit torch/torchvision/numpy/cv2 from the base; install only the extras
+  DEP_PROBE='import torch,insightface,onnxruntime,trimesh,yacs,loguru,cv2,skimage,numpy,gdown,tqdm,face_alignment,mediapipe,matplotlib,chumpy'
+  PIP_PKGS="insightface onnxruntime trimesh loguru yacs scikit-image gdown tqdm face-alignment mediapipe matplotlib"
+else
+  DEP_PROBE='import torch,torchvision,insightface,onnxruntime,trimesh,yacs,loguru,cv2,skimage,numpy,gdown,tqdm,face_alignment,mediapipe,matplotlib,chumpy'
+  PIP_PKGS="torch torchvision insightface onnxruntime trimesh loguru yacs opencv-python scikit-image numpy gdown tqdm face-alignment mediapipe matplotlib"
+fi
 if "$PY" -c "$DEP_PROBE" 2>/dev/null; then
   echo "-- deps already present, skipping pip"
 else
   echo "-- installing deps (one or more missing)"
   "$PY" -m pip install -U pip setuptools wheel
-  "$PY" -m pip install torch torchvision insightface onnxruntime \
-        trimesh loguru yacs opencv-python scikit-image numpy gdown tqdm face-alignment mediapipe matplotlib
+  "$PY" -m pip install $PIP_PKGS
   "$PY" -m pip install --no-build-isolation chumpy   # setup.py imports pip -> no build isolation
 fi
 
@@ -131,13 +149,16 @@ if [ -f "$MICA_FLAME" ] && [ ! -f "$ROOT/viewer/flame/flame_basis.bin" ]; then
 fi
 
 echo; echo "== setup check =="
-"$PY" "$ROOT/viewer/studio_server.py" --check || true
+FACEHASH_PY="$PY" "$PY" "$ROOT/viewer/studio_server.py" --check || true
+echo
+echo "venv python: $PY"
+echo "  -> ComfyUI node: set \"python_bin\" in comfy/custom_nodes/ComfyUI_FaceHashDepth/config.json to that"
+echo "  -> studio:       FACEHASH_PY=$PY python3 viewer/studio_server.py"
 cat <<'EOF'
 
 Re-runnable: nothing above re-downloads what you already have. Any [XX] is almost certainly one of the
 two gated weights (placed once, then shared/reused forever):
   • FLAME generic_model.pkl  -> register at https://flame.is.tue.mpg.de, drop in local/MICA/data/FLAME2020/
   • MICA mica.tar            -> download per https://github.com/Zielon/MICA into local/MICA/data/pretrained/
-Re-check anytime (no downloads):  python3 viewer/studio_server.py --check
-When all green:                   python3 viewer/studio_server.py
+Re-check anytime (no downloads):  FACEHASH_PY=<venv python above> python3 viewer/studio_server.py --check
 EOF
