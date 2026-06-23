@@ -170,9 +170,11 @@ PY=/opt/face-venv/bin/python
 #    Needs only huggingface_hub + pillow (no `datasets`).
 $PY fetch_synthetic_faces.py -o synthetic_faces/        # bigger corpus: --zips SFHQ-part1.zip -n 5000
 
-# 2) extract embeddings (antelope + mica), then fit the whitening basis (pure numpy, fast)
-$PY build_gallery.py -i synthetic_faces/ -o corpus.npz --device cpu
+# 2) extract embeddings, then fit the whitening basis (pure numpy, fast)
+$PY build_gallery.py -i synthetic_faces/ -o corpus.npz --no-mica --device cpu   # antelope only — FAST
 $PY build_basis.py  -i corpus.npz -o basis.npz --var 0.95     # -> basis.npz (aggregate stats; commit-safe)
+# ...later, for the depth path, do the full paired pass (runs MICA per face -> slow on CPU):
+$PY build_gallery.py -i synthetic_faces/ -o corpus.npz --device cpu             # adds the mica column
 ```
 
 Sanity-check the transform before ComfyUI (a real face npy → a different, in-distribution synthetic):
@@ -180,6 +182,13 @@ Sanity-check the transform before ComfyUI (a real face npy → a different, in-d
 $PY arcface_hash.py <some>_arcface.npy --transform arcface_keymix_whitened_v3 \
     --basis basis.npz --column antelope -k zack-secret -o /tmp/v3.npy   # prints cos(original,hashed)
 ```
+
+> **Use enough faces** for a stable basis — aim for **~1500+** (`build_basis` warns when samples < 512,
+> i.e. rank-limited). `build_gallery` extracts the **antelope** column with its own
+> `FaceAnalysis(antelopev2)` (the recognition embedding InstantID consumes) and the **mica** column via
+> MICA; `--device cpu` is the safe default (the pod's onnxruntime is CPU-only). The full paired pass
+> validated locally end-to-end (corpus → basis → `hash_shape … --transform arcface_keymix_whitened_v3
+> --column mica` → plausible shapes).
 
 **Wire both nodes (must match):** on `FaceHashApplyInstantID#8` **and** `FaceHashDepth#54` set
 `transform = arcface_keymix_whitened_v3`, the same `key`, the same `basis_path` (point at `basis.npz`),
