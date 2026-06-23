@@ -154,6 +154,45 @@ Throwaway 3-node graph: `LoadImage → FaceHashDepth → PreviewImage` (+ a Mask
 - After editing geometry, flip node 54 `force_rerender` true once (cache key =
   image+key+offset+shape_source+device).
 
+## Phase 6 — On-manifold synthetic identities (`arcface_keymix_whitened_v3`, recommended)
+
+The default `arcface_keymix_v1` is a signed permutation → **off-manifold** → InstantID renders inhuman
+faces on some inputs (and forces you to back `ip_weight`/`cn_strength` down). `arcface_keymix_whitened_v3`
+keymixes in a **whitened identity subspace** (where a permutation preserves the distribution), so the
+output is an on-manifold **derived synthetic** identity — no real face targeted. One-time setup:
+
+```bash
+cd /workspace/face-hashing/local
+PY=/opt/face-venv/bin/python
+
+# 1) synthetic faces only — "people who don't exist" (StyleGAN / SFHQ / thispersondoesnotexist).
+#    No real identity is involved; we only measure the shape of the face region.
+#    Put a few hundred–few thousand .jpg/.png in  synthetic_faces/
+
+# 2) extract embeddings (antelope + mica), then fit the whitening basis (pure numpy, fast)
+$PY build_gallery.py -i synthetic_faces/ -o corpus.npz --device cpu
+$PY build_basis.py  -i corpus.npz -o basis.npz --var 0.95     # -> basis.npz (aggregate stats; commit-safe)
+```
+
+Sanity-check the transform before ComfyUI (a real face npy → a different, in-distribution synthetic):
+```bash
+$PY arcface_hash.py <some>_arcface.npy --transform arcface_keymix_whitened_v3 \
+    --basis basis.npz --column antelope -k zack-secret -o /tmp/v3.npy   # prints cos(original,hashed)
+```
+
+**Wire both nodes (must match):** on `FaceHashApplyInstantID#8` **and** `FaceHashDepth#54` set
+`transform = arcface_keymix_whitened_v3`, the same `key`, the same `basis_path` (point at `basis.npz`),
+and the same `offset`. Each node auto-reads its column — InstantID `antelope`, depth `mica` — so you only
+set one path. (Your DRY key primitive already shares the key; add a String primitive for `basis_path`.)
+
+**Bring-up order:** Phase-3 isolation first — `LoadImage → FaceHashDepth(v3, basis_path set) →
+PreviewImage`. Confirm a clean depth, *then* run the full graph. With on-manifold embeddings, push
+`ip_weight`/`cn_strength` back up toward ~0.8; the OOD monsters should be gone.
+
+**Caveat:** v3 co-design is approximate — MICA and antelopev2 whiten in different spaces, so the same key
+gives a plausible synthetic in *each* but not provably the *same* person. Per-key consistency holds within
+each path; a learned cross-backbone map would tie them (future).
+
 ---
 
 ## Troubleshooting
@@ -164,8 +203,10 @@ Throwaway 3-node graph: `LoadImage → FaceHashDepth → PreviewImage` (+ a Mask
 | "subprocess failed … no face" | Phase-1 CLIs not actually green, or the photo has no detectable face |
 | CUDA / ORT provider error on node 54 | you set `device=cuda`; `patch_mica_for_mac` forces CPU ORT — use `device=cpu`, or remove the patch and fix the model env |
 | Depth misaligned with the face crop | node 54 must be fed the **same** `LoadAndResizeImage(21)` output as the rest of the graph (it is, in the repo file) |
-| Geometry ≠ texture identity | node 54 and node 8 keys/offsets diverged |
+| Geometry ≠ texture identity | node 54 and node 8 `transform`/`key`/`offset`/`basis_path` diverged (must match) |
 | First render slow every time | cache not persisting — check `cache_dir` is writable and stable across runs |
+| `needs basis_path` / `basis … missing` | `transform=arcface_keymix_whitened_v3` but no/!valid `basis.npz` — run Phase 6 build; the `.npz` needs `antelope_*` (+ `mica_*` for depth) keys |
+| Still inhuman with `v3` | basis fit on too few / non-face images — use more synthetic faces; or `offset` too high (start 0); confirm `arcface_hash.py … --transform arcface_keymix_whitened_v3` sanity-check looked plausible |
 
 ## Reference
 
