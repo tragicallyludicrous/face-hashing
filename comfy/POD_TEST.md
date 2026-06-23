@@ -66,26 +66,33 @@ Two gated weights `setup.sh` can't fetch (place once — it then shares FLAME ac
 python3 viewer/studio_server.py --check         # all [OK] = Phase 0 done, go to Phase 1
 ```
 
-## Phase 1 — Prove the two CLIs run on the pod (the real test)
+## Phase 1 — Prove the two CLIs run on the pod (the real test) — ✅ validated on the pod
 
 This is exactly what `FaceHashDepth` shells out to. If these produce a depth PNG by hand, the node works.
+Use the venv `setup.sh` built (`PY` below = `/opt/face-venv/bin/python` in reuse mode, else `.venv/bin/python`).
 
 ```bash
 cd $REPO/local
+PY=/opt/face-venv/bin/python                     # reuse-mode venv; else local/.venv/bin/python
 PHOTO=in/Zack-from-below.jpeg                    # any face photo present on the pod
+STEM=$(basename "${PHOTO%.*}")
 
 # MICA: photo + key -> hashed 300-d shape
-.venv/bin/python hash_shape.py "$PHOTO" --keys zack-secret --offset 0.0 -o /tmp/fh --device cpu
-ls /tmp/fh/                                      # expect  <stem>__zack-secret.npy
+$PY hash_shape.py "$PHOTO" --keys zack-secret --offset 0.0 -o /tmp/fh --device cpu
+ls /tmp/fh/                                      # expect  ${STEM}__zack-secret.npy
 
-# SMIRK: photo + that shape -> aligned depth/mask
-.venv/bin/python render_cond.py "$PHOTO" --maps --out-dir /tmp/fh \
-    --shape /tmp/fh/*__zack-secret.npy --device cpu
-ls /tmp/fh/                                      # expect  <stem>_depth.png  <stem>_mask.png
+# SMIRK: photo + that shape -> aligned depth/mask.
+# Pass the ONE shape file for THIS photo — a glob (*__zack-secret.npy) matches leftover .npy
+# from earlier runs and argparse rejects the extras.
+$PY render_cond.py "$PHOTO" --maps --out-dir /tmp/fh \
+    --shape "/tmp/fh/${STEM}__zack-secret.npy" --device cpu
+ls /tmp/fh/${STEM}_depth.png /tmp/fh/${STEM}_mask.png   # expect both
 ```
 
-Open `<stem>_depth.png`: a face-shaped depth aligned to the photo's pose. **If this fails, stop here** —
-fix the weight / no-face / detector issue before touching ComfyUI.
+Open `${STEM}_depth.png`: a face-shaped depth aligned to the photo's pose. **If this fails, stop here** —
+fix the weight / no-face / detector issue before touching ComfyUI. (Benign noise to ignore: HF
+"unauthenticated requests" notices, timm "Unexpected keys … classifier/conv_head", and FLAME/numpy
+`VisibleDeprecationWarning: align=0` from unpickling the FLAME model.)
 
 ## Phase 2 — Install the node into ComfyUI
 
