@@ -45,7 +45,9 @@ def main():
     ap.add_argument("-i", "--in-dir", required=True, help="folder of real face photos")
     ap.add_argument("-o", "--out", default="gallery.npz", help="output .npz (paired) / .npy (antelope only)")
     ap.add_argument("--no-mica", action="store_true", help="antelope column only (skip MICA; texture-only)")
-    ap.add_argument("--device", default="cpu")
+    ap.add_argument("--device", default="cpu", help="cpu | cuda (cuda needs onnxruntime-gpu for the ONNX half)")
+    ap.add_argument("--det-size", type=int, default=640, help="antelope detector size; lower=faster (padded "
+                    "faces detect fine at 320-416)")
     a = ap.parse_args()
 
     import cv2
@@ -56,7 +58,12 @@ def main():
     providers = (["CUDAExecutionProvider", "CPUExecutionProvider"] if a.device == "cuda"
                  else ["CPUExecutionProvider"])
     app = FaceAnalysis(name="antelopev2", providers=providers)
-    app.prepare(ctx_id=0 if a.device == "cuda" else -1, det_size=(640, 640))
+    app.prepare(ctx_id=0 if a.device == "cuda" else -1, det_size=(a.det_size, a.det_size))
+    try:                                                # report what ORT actually picked (CUDA vs CPU)
+        import onnxruntime as ort
+        print("onnxruntime providers available:", ort.get_available_providers())
+    except Exception:                                   # noqa: BLE001
+        pass
 
     h = None
     if not a.no_mica:                                   # MICA only needed for the mica column
