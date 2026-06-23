@@ -49,6 +49,14 @@ for t in unzip wget; do
   fi
 done
 
+# 0b) mediapipe GL runtime libs: its vision tasks dlopen libGLESv2/libGL/libEGL even for CPU inference;
+#     minimal/headless pods lack them (the classic "libGLESv2.so.2: cannot open shared object file").
+if command -v apt-get >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -q 'libGLESv2\.so\.2'; then
+  echo "-- installing mediapipe GL libs (apt)"
+  apt-get update -qq && apt-get install -y -qq libgl1 libglib2.0-0 libgles2 libegl1 \
+    || echo "  (couldn't apt-get GL libs — mediapipe needs libGLESv2.so.2 / libGL / libEGL)"
+fi
+
 # 1) venv + deps  (skip the whole pip resolve if everything already imports)
 [ -x "$VENV/bin/python" ] || { echo "-- creating $VENV"; mkdir -p "$(dirname "$VENV")"; "$CREATE_PY" -m venv $SYS_SITE "$VENV"; }
 PY="$VENV/bin/python"

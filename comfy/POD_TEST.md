@@ -54,6 +54,13 @@ Two gated weights `setup.sh` can't fetch (place once — it then shares FLAME ac
   ```bash
   local/.venv/bin/python -m gdown "https://drive.google.com/uc?id=<id>" -O <path>
   ```
+- **mediapipe `libGLESv2.so.2: cannot open shared object file`.** Minimal pods lack the GL runtime libs
+  mediapipe's vision tasks `dlopen` (even for CPU). `setup.sh` step 0 apt-installs
+  `libgl1 libglib2.0-0 libgles2 libegl1`.
+- **Slow `import torch` on a network-volume pod (~20 s+).** `/workspace` is MooseFS; importing the 2 GB
+  CUDA torch is thousands of remote metadata RPCs. Build the venv on **local disk** reusing ComfyUI's
+  torch: `FACEHASH_VENV=/opt/face-venv FACEHASH_BASE_PY=/usr/bin/python3.12 ./setup.sh`, then point the
+  node's `config.json` `python_bin` (and `FACEHASH_PY`) at `/opt/face-venv/bin/python`.
 
 ```bash
 python3 viewer/studio_server.py --check         # all [OK] = Phase 0 done, go to Phase 1
