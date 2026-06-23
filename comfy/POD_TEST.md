@@ -165,9 +165,10 @@ output is an on-manifold **derived synthetic** identity — no real face targete
 cd /workspace/face-hashing/local
 PY=/opt/face-venv/bin/python
 
-# 1) synthetic faces only — "people who don't exist" (StyleGAN / SFHQ / thispersondoesnotexist).
-#    No real identity is involved; we only measure the shape of the face region.
-#    Put a few hundred–few thousand .jpg/.png in  synthetic_faces/
+# 1) download synthetic faces — SFHQ (fully synthetic, no real identity). ~1500 faces, margin-padded
+#    so RetinaFace detects them (SFHQ are tight crops -> padding lifts detection ~30% -> ~100%).
+#    Needs only huggingface_hub + pillow (no `datasets`).
+$PY fetch_synthetic_faces.py -o synthetic_faces/        # bigger corpus: --zips SFHQ-part1.zip -n 5000
 
 # 2) extract embeddings (antelope + mica), then fit the whitening basis (pure numpy, fast)
 $PY build_gallery.py -i synthetic_faces/ -o corpus.npz --device cpu
