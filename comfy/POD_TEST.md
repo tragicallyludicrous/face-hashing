@@ -27,16 +27,36 @@ cd $REPO
 PYTHON=python3.11 ./setup.sh                    # venv, MICA+SMIRK, antelopev2, FLAME basis
 ```
 
-`setup.sh` runs `patch_mica_for_mac.py`, which forces **CPU** ONNX providers. On a CUDA pod that's fine —
+`setup.sh` is **re-runnable** — every step checks before it fetches, so re-running on a persistent
+`/workspace` volume just re-runs the doctor (it does **not** call SMIRK's unguarded `quick_install.sh`).
+It runs `patch_mica_for_mac.py`, which forces **CPU** ONNX providers; on a CUDA pod that's fine —
 first-run drives the depth node at `device=cpu` anyway (encode + numpy rasterizer ≈ 30–60 s on CPU; CUDA
 is only a convenience here). Don't fight it yet.
 
-Two gated weights `setup.sh` can't fetch (drop in, then re-check):
-- FLAME `generic_model.pkl` → `local/MICA/data/FLAME2020/` (SMIRK's `quick_install.sh` often supplies it)
+Two gated weights `setup.sh` can't fetch (place once — it then shares FLAME across MICA+SMIRK and reuses
+`mica.tar`, never re-downloading):
+- FLAME `generic_model.pkl` → `local/MICA/data/FLAME2020/`
 - MICA `mica.tar` → `local/MICA/data/pretrained/`
 
+### Snags a fresh pod actually hits (now handled by the script)
+- **No `python3.11`.** Minimal/PyTorch RunPod images ship 3.10. Install once, then re-run setup:
+  ```bash
+  apt-get update && apt-get install -y software-properties-common
+  add-apt-repository -y ppa:deadsnakes/ppa
+  apt-get update && apt-get install -y python3.11 python3.11-venv python3.11-dev
+  PYTHON=python3.11 ./setup.sh                   # or point PYTHON at any 3.11 binary
+  ```
+- **No `unzip` / `wget`.** Needed to extract a manually-downloaded `FLAME2020.zip`; `setup.sh` step 0
+  apt-installs them on the pod.
+- **`gdown` missing or `--id` error.** `gdown` is a *venv* package (the doctor's package probe doesn't
+  list it) and newer gdown dropped `--id`. `setup.sh` self-heals the install and uses the URL form. The
+  manual fetch, if you need it:
+  ```bash
+  local/.venv/bin/python -m gdown "https://drive.google.com/uc?id=<id>" -O <path>
+  ```
+
 ```bash
-python3 viewer/studio_server.py --check         # all green before moving on
+python3 viewer/studio_server.py --check         # all [OK] = Phase 0 done, go to Phase 1
 ```
 
 ## Phase 1 — Prove the two CLIs run on the pod (the real test)
