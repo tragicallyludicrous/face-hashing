@@ -120,7 +120,8 @@ def check_setup():
         ("SMIRK checkout", os.path.isdir(S),
          "git clone https://github.com/georgeretsi/smirk.git local/smirk"),
         ("SMIRK weights SMIRK_em1.pt", os.path.exists(os.path.join(S, "pretrained_models/SMIRK_em1.pt")),
-         "./setup.sh  (or: local/.venv/bin/python -m gdown --id 1T65uEd9dVLHgVw5KiUYL66NUee-MCzoE "
+         "./setup.sh  (or: local/.venv/bin/python -m gdown "
+         "'https://drive.google.com/uc?id=1T65uEd9dVLHgVw5KiUYL66NUee-MCzoE' "
          "-O local/smirk/pretrained_models/SMIRK_em1.pt)"),
         ("antelopev2 detector", bool(glob.glob(os.path.join(antelope, "*.onnx"))),
          "auto-fetches on first pipeline run (or local/README.md §3b)"),

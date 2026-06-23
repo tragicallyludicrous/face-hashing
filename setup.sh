@@ -64,7 +64,7 @@ if [ ! -f "$SMIRK_PT" ]; then
   echo "-- fetching SMIRK_em1.pt"
   mkdir -p "$LOCAL/smirk/pretrained_models"
   "$PY" -c 'import gdown' 2>/dev/null || "$PY" -m pip install -q gdown   # venv tool; self-heal old venvs
-  "$PY" -m gdown --id 1T65uEd9dVLHgVw5KiUYL66NUee-MCzoE -O "$SMIRK_PT" \
+  "$PY" -m gdown "https://drive.google.com/uc?id=1T65uEd9dVLHgVw5KiUYL66NUee-MCzoE" -O "$SMIRK_PT" \
     || echo "  (gdown hiccup — get SMIRK_em1.pt from SMIRK's repo into $SMIRK_PT)"
 fi
 
