@@ -24,9 +24,12 @@ local/temp.py
 # Generated inspection figures/JSON (derive from personal photos -> keep local)
 tools/figures/
 
-# arcface_blend_v2 real-identity galleries (embeddings derived from real faces -> keep local)
+# arcface hash corpora/galleries (per-face embeddings -> keep local). The fitted whitening
+# *basis* (aggregate stats only, from synthetic faces) is fine to commit if you want.
 *gallery*.npz
 *gallery*.npy
+*corpus*.npz
+*corpus*.npy
 
 # FLAME shape basis exported for viewer/sliders.html — registration-gated, non-commercial license
 viewer/flame/

@@ -15,11 +15,16 @@ Because the rows are aligned, the SAME key selects the SAME real person in BOTH 
 hashed geometry (mica column) and hashed texture (antelope column) depict ONE synthetic identity
 — the shared-identity refactor — even though MICA and antelopev2 are different ArcFace models.
 
-    python build_gallery.py -i faces/ -o gallery.npz                 # paired (needs MICA)
-    python build_gallery.py -i faces/ -o gallery.npz --no-mica       # antelope only (texture)
+    python build_gallery.py -i faces/ -o corpus.npz                  # paired (needs MICA)
+    python build_gallery.py -i faces/ -o corpus.npz --no-mica        # antelope only (texture)
 
-Use real, rights-cleared faces (a public face dataset / stock). Keep galleries out of git if the
-faces are sensitive. A few hundred varied identities is plenty.
+Two uses for the output `.npz`:
+  • `arcface_keymix_whitened_v3` (recommended) — feed it to `build_basis.py` to fit a whitening basis.
+    Use **SYNTHETIC** faces here ("people who don't exist": StyleGAN / SFHQ) — only the *shape* of the
+    face region is measured, no real identity is involved, and the hash output is a derived synthetic.
+  • `arcface_blend_v2` — used directly as a gallery the hash blends *toward*, so it copies those
+    identities; use real, rights-cleared faces only if you actually want that.
+A few hundred–few thousand varied faces is plenty. Galleries are git-ignored (`*gallery*`, `*corpus*`).
 """
 import argparse
 import os

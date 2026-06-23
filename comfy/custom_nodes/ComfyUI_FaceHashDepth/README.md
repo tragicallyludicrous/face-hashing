@@ -28,20 +28,26 @@ first render of a given key costs ~30–60 s and every run after is instant — 
 ## ⚠️ Match the InstantID node: key + transform + gallery
 
 Geometry (here) and texture (`FaceHashApplyInstantID`) hash on **different** ArcFace backbones (MICA's
-frozen model vs antelopev2), so you can't share one raw vector. Two transforms:
+frozen model vs antelopev2), so you can't share one raw vector. Three transforms:
 
 - **`arcface_keymix_v1`** (signed permutation): deterministic per key but **off-manifold** — InstantID
-  can render inhuman faces on some inputs, and geometry/texture are only "consistent per key", not the
-  same designed face. Set `key` + `offset` identical to the InstantID node.
-- **`arcface_blend_v2`** (recommended): blends toward a **key-selected real identity** from a *paired
-  gallery* (`build_gallery.py` → `.npz` with row-aligned `antelope` + `mica` columns). On-manifold
-  (plausible for any input) **and co-designed**: the same key picks the same gallery person in both
-  columns, so geometry and texture depict **one** synthetic identity. This node reads the `mica` column;
-  the InstantID node reads `antelope`.
+  can render inhuman faces on some inputs. Set `key` + `offset` identical to the InstantID node.
+- **`arcface_keymix_whitened_v3`** (recommended): keymix in a **whitened identity subspace** (a `basis`
+  fitted by `build_basis.py` over **synthetic** faces — "people who don't exist"). A permutation in
+  whitened space preserves the distribution → an **on-manifold, fully DERIVED synthetic identity** (no
+  real face targeted). This node reads the basis `mica` column; the InstantID node reads `antelope`.
+  Set `transform`, `key`, `basis_path`, `offset` identical on both nodes.
+- **`arcface_blend_v2`**: blends toward a real-identity gallery (`gallery_path`). On-manifold but copies
+  real faces — kept for completeness.
 
-For `blend_v2`, set **`transform`, `key`, `gallery_path`, `strength`, and `n_mix` identical** on both
-nodes (only the gallery *column* differs, and the nodes pick that automatically). Mismatch → geometry
-and texture drift apart.
+> **Same-everything rule:** whatever transform you pick, set it (and its `key`/`basis_path`/`gallery_path`
+> /`offset`/`strength`/`n_mix`) **identical** on both nodes — only the gallery/basis *column* differs and
+> the nodes pick that automatically (`mica` here, `antelope` on InstantID). Mismatch → geometry and
+> texture drift apart.
+>
+> Note: `v3` co-design is approximate — MICA and antelopev2 whiten in different spaces, so the same key
+> gives a plausible synthetic in *each*, but they aren't guaranteed to be the *same* synthetic person
+> (a learned cross-backbone map would tie them; future work). Per-key consistency holds within each path.
 
 ## Pod setup
 

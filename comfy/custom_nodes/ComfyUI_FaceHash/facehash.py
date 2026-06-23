@@ -92,3 +92,32 @@ def load_gallery(path, column: str = "antelope"):
             raise KeyError(f"gallery {p} has no column {column!r}; has {list(z.keys())}")
         return z[column].astype(np.float64)
     return np.load(p).astype(np.float64)
+
+
+# --- arcface_keymix_whitened_v3 — ON-MANIFOLD via WHITENING (derived synthetic id, no targeting) ---
+# Keep byte-identical to local/arcface_hash.py. keymix in the whitened PCA-identity subspace, where a
+# permutation preserves the (now isotropic) distribution -> stays in-distribution -> plausible synth.
+def arcface_keymix_whitened_v3(embedding, key: str, basis, offset: float = 0.0):
+    """basis = (mu (D,), V (k,D) PCA rows, sigma (k,) per-axis std) from build_basis.py."""
+    e = np.asarray(embedding, dtype=np.float64)
+    mu, V, sigma = (np.asarray(b, dtype=np.float64) for b in basis)
+    k = V.shape[0]
+    nrm = np.linalg.norm(e, axis=-1, keepdims=True)
+    z = ((e - mu) @ V.T) / sigma
+    perm, signs, rng = _keyed(key, k)
+    zt = signs * z[..., perm]
+    if offset:
+        zt = zt + offset * rng.standard_normal(zt.shape)
+    out = mu + (zt * sigma) @ V
+    out = out / np.linalg.norm(out, axis=-1, keepdims=True) * nrm
+    return out.astype(np.float32)
+
+
+def load_basis(path, column: str = "antelope"):
+    """Load a whitening basis .npz ('<col>_mu','<col>_V','<col>_sigma'). -> (mu, V (k,D), sigma)."""
+    z = np.load(str(path))
+    pre = column + "_"
+    miss = [pre + n for n in ("mu", "V", "sigma") if pre + n not in z]
+    if miss:
+        raise KeyError(f"basis {path} missing {miss}; has {list(z.keys())}")
+    return z[pre + "mu"].astype(np.float64), z[pre + "V"].astype(np.float64), z[pre + "sigma"].astype(np.float64)

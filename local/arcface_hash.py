@@ -158,8 +158,56 @@ def load_gallery(path, column: str = "antelope"):
     return np.load(p).astype(np.float64)
 
 
+# --------------------------------------------------------------------------- #
+# arcface_keymix_whitened_v3 — ON-MANIFOLD via WHITENING (derived synthetic id, no targeting)
+# --------------------------------------------------------------------------- #
+# keymix_v1 is off-manifold because the real-embedding cloud is *anisotropic* (correlated dims,
+# very different per-direction variances) — a permutation of raw coords lands outside it. But a
+# permutation is distribution-preserving when the coords are ISOTROPIC. So: whiten the identity
+# subspace (mean + PCA + per-axis std, learned ONCE from a corpus of *synthetic* faces — people who
+# don't exist), permute THERE, then un-whiten. The scrambled point stays inside the real-embedding
+# distribution -> a plausible but fully DERIVED synthetic identity (no real face targeted). The
+# "basis" is aggregate statistics (mu, V, sigma); no faces are retained. See build_basis.py.
+
+
+def arcface_keymix_whitened_v3(embedding, key: str, basis, offset: float = 0.0):
+    """Identity hash by keymix in the whitened PCA-identity subspace.
+
+    embedding : (D,) or (N,D) raw ArcFace embedding (same backbone as the basis).
+    basis     : (mu (D,), V (k,D) PCA rows, sigma (k,) per-axis std) from build_basis.py.
+    offset    : >0 adds isotropic Gaussian in whitened space (still in-distribution) for more
+                scramble; 0 = pure permutation (subspace-reversible with the key)."""
+    e = np.asarray(embedding, dtype=np.float64)
+    mu, V, sigma = (np.asarray(b, dtype=np.float64) for b in basis)
+    k = V.shape[0]
+    nrm = np.linalg.norm(e, axis=-1, keepdims=True)
+    z = ((e - mu) @ V.T) / sigma                         # project + whiten -> ~isotropic (..., k)
+    perm, signs, rng = _keyed(key, k)
+    zt = signs * z[..., perm]                            # permutation preserves an isotropic dist
+    if offset:
+        zt = zt + offset * rng.standard_normal(zt.shape)
+    out = mu + (zt * sigma) @ V                          # un-whiten + reconstruct (drops residual)
+    out = out / np.linalg.norm(out, axis=-1, keepdims=True) * nrm
+    return out.astype(np.float32)
+
+
+def load_basis(path, column: str = "antelope"):
+    """Load a whitening basis .npz (per-column '<col>_mu','<col>_V','<col>_sigma' from
+    build_basis.py). Returns (mu (D,), V (k,D), sigma (k,))."""
+    z = np.load(str(path))
+    pre = column + "_"
+    miss = [pre + n for n in ("mu", "V", "sigma") if pre + n not in z]
+    if miss:
+        raise KeyError(f"basis {path} missing {miss}; has {list(z.keys())}")
+    return z[pre + "mu"].astype(np.float64), z[pre + "V"].astype(np.float64), z[pre + "sigma"].astype(np.float64)
+
+
 # registry hook (Stage-2 plan: hot-swappable strategies)
-TRANSFORMS = {"arcface_keymix_v1": arcface_keymix_v1, "arcface_blend_v2": arcface_blend_v2}
+TRANSFORMS = {
+    "arcface_keymix_v1": arcface_keymix_v1,
+    "arcface_blend_v2": arcface_blend_v2,
+    "arcface_keymix_whitened_v3": arcface_keymix_whitened_v3,
+}
 
 
 def cosine(a, b):
@@ -221,6 +269,36 @@ def selftest(key: str = "demo-key"):
     print(f"  nearest-gallery cos  e={near(e):+.3f} -> blend(0.9)={near(bm(e, key, 0.9)):+.3f}   "
           "(blend pulled toward the real-id set)")
 
+    # --- arcface_keymix_whitened_v3: on-manifold via whitening (DERIVED synthetic, no targeting) ---
+    print("  --- arcface_keymix_whitened_v3 (whitened keymix) ---")
+    kdim = 40
+    Vtrue = np.linalg.qr(rng.standard_normal((512, kdim)))[0].T          # (k,512) true id axes
+    sig_true = np.linspace(1.0, 0.2, kdim)                               # anisotropic variances
+
+    def sample(n):                                                      # a synthetic "id manifold"
+        X = (rng.standard_normal((n, kdim)) * sig_true) @ Vtrue + 0.02 * rng.standard_normal((n, 512))
+        return X / np.linalg.norm(X, axis=1, keepdims=True)
+
+    E = sample(4000)
+    mu = E.mean(0)
+    _, S, Vt = np.linalg.svd(E - mu, full_matrices=False)
+    basis = (mu, Vt[:kdim], S[:kdim] / np.sqrt(len(E) - 1))
+    test = sample(200)                                                  # held-out on-manifold faces
+
+    def off(M):  # fraction of energy OUTSIDE the id subspace: ~0 on-manifold, ->1 off-manifold
+        r = M - basis[0]
+        proj = (r @ basis[1].T) @ basis[1]
+        return float(np.mean(np.sum((r - proj) ** 2, axis=1) / np.sum(r ** 2, axis=1)))
+
+    v3 = np.stack([arcface_keymix_whitened_v3(t, key, basis) for t in test])
+    rawk = np.stack([arcface_keymix_v1(t, key) for t in test])
+    print(f"  off-manifold energy fraction (0=on-manifold, ->1=off):")
+    print(f"     on-manifold {off(test):.2f}   raw keymix {off(rawk):.2f}   v3 {off(v3):.2f}")
+    print("  deterministic:", np.allclose(arcface_keymix_whitened_v3(test[0], key, basis),
+                                           arcface_keymix_whitened_v3(test[0], key, basis)))
+    print(f"  cos(e, v3) same/other key : {cosine(test[0], v3[0]):+.3f} / "
+          f"{cosine(test[0], arcface_keymix_whitened_v3(test[0], 'k2', basis)):+.3f}   (key-dependent)")
+
 
 def compare(folder: str, key: str):
     """Across a folder of <id>-<...>_arcface.npy, show that hashing moves every
@@ -270,7 +348,8 @@ def main():
     ap.add_argument("--offset", type=float, default=0.0)
     ap.add_argument("--transform", choices=list(TRANSFORMS), default="arcface_keymix_v1")
     ap.add_argument("--gallery", help="paired gallery .npz/.npy (required for arcface_blend_v2)")
-    ap.add_argument("--column", default="antelope", help="gallery column: antelope|mica (.npz)")
+    ap.add_argument("--basis", help="whitening basis .npz (required for arcface_keymix_whitened_v3)")
+    ap.add_argument("--column", default="antelope", help="gallery/basis column: antelope|mica")
     ap.add_argument("--strength", type=float, default=0.6, help="blend_v2: 0=self .. 1=target id")
     ap.add_argument("--n-mix", type=int, default=2, help="blend_v2: # gallery rows mixed per key")
     ap.add_argument("--selftest", action="store_true")
@@ -291,6 +370,11 @@ def main():
             ap.error("arcface_blend_v2 needs --gallery (build one with build_gallery.py)")
         gal = load_gallery(args.gallery, args.column)
         apply = lambda e: arcface_blend_v2(e, args.key, gal, args.strength, args.n_mix)
+    elif args.transform == "arcface_keymix_whitened_v3":
+        if not args.basis:
+            ap.error("arcface_keymix_whitened_v3 needs --basis (build one with build_basis.py)")
+        bs = load_basis(args.basis, args.column)
+        apply = lambda e: arcface_keymix_whitened_v3(e, args.key, bs, args.offset)
     else:
         apply = lambda e: arcface_keymix_v1(e, args.key, args.offset)
 

@@ -17,7 +17,8 @@ import numpy as np
 import torch
 
 import mica_local as mica
-from arcface_hash import arcface_keymix_v1, arcface_blend_v2, load_gallery, cosine
+from arcface_hash import (arcface_keymix_v1, arcface_blend_v2, arcface_keymix_whitened_v3,
+                          load_gallery, load_basis, cosine)
 
 
 def _codedict(h, image_path):
@@ -54,12 +55,15 @@ def shape_for(h, codedict, raw_emb, transform_fn):
     return opdict["pred_shape_code"][0].detach().cpu().numpy().astype(np.float32)
 
 
-def _transform_for(key, args, gallery):
-    """Build raw512 -> emb512 for one key. key in ('','raw') -> identity (un-hashed)."""
+def _transform_for(key, args, aux):
+    """Build raw512 -> emb512 for one key. key in ('','raw') -> identity (un-hashed).
+    aux = gallery (blend_v2) or basis (whitened_v3), loaded once in main()."""
     if key in ("", "raw", None):
         return lambda e: np.asarray(e, np.float32)
+    if args.transform == "arcface_keymix_whitened_v3":
+        return lambda e: arcface_keymix_whitened_v3(e, key, aux, args.offset)
     if args.transform == "arcface_blend_v2":
-        return lambda e: arcface_blend_v2(e, key, gallery, args.strength, args.n_mix)
+        return lambda e: arcface_blend_v2(e, key, aux, args.strength, args.n_mix)
     return lambda e: arcface_keymix_v1(e, key, args.offset)
 
 
@@ -68,21 +72,27 @@ def main():
     ap.add_argument("image", help="input photo")
     ap.add_argument("--keys", nargs="+", default=["raw", "zack-secret"], help="keys ('raw' = un-hashed)")
     ap.add_argument("--offset", type=float, default=0.0)
-    ap.add_argument("--transform", choices=["arcface_keymix_v1", "arcface_blend_v2"],
+    ap.add_argument("--transform",
+                    choices=["arcface_keymix_v1", "arcface_blend_v2", "arcface_keymix_whitened_v3"],
                     default="arcface_keymix_v1")
     ap.add_argument("--gallery", help="paired gallery .npz (required for arcface_blend_v2)")
-    ap.add_argument("--column", default="mica", help="gallery column for the MICA geometry path")
+    ap.add_argument("--basis", help="whitening basis .npz (required for arcface_keymix_whitened_v3)")
+    ap.add_argument("--column", default="mica", help="gallery/basis column for the MICA geometry path")
     ap.add_argument("--strength", type=float, default=0.6, help="blend_v2: 0=self .. 1=target id")
     ap.add_argument("--n-mix", dest="n_mix", type=int, default=2, help="blend_v2: gallery rows/key")
     ap.add_argument("-o", "--out-dir", default="bridge_test/hashed")
     ap.add_argument("--device", default="cpu")
     a = ap.parse_args()
 
-    gallery = None
+    aux = None
     if a.transform == "arcface_blend_v2":
         if not a.gallery:
             raise SystemExit("arcface_blend_v2 needs --gallery (build one with build_gallery.py)")
-        gallery = load_gallery(a.gallery, a.column)
+        aux = load_gallery(a.gallery, a.column)
+    elif a.transform == "arcface_keymix_whitened_v3":
+        if not a.basis:
+            raise SystemExit("arcface_keymix_whitened_v3 needs --basis (build one with build_basis.py)")
+        aux = load_basis(a.basis, a.column)
 
     h = mica.load(device=a.device)
     got = _codedict(h, a.image)
@@ -94,7 +104,7 @@ def main():
     stem = os.path.splitext(os.path.basename(a.image))[0]
     shapes = {}
     for k in a.keys:
-        s = shape_for(h, codedict, raw, _transform_for(k, a, gallery))
+        s = shape_for(h, codedict, raw, _transform_for(k, a, aux))
         tag = "raw" if k in ("", "raw") else k
         path = os.path.join(a.out_dir, f"{stem}__{tag}.npy")
         np.save(path, s)
