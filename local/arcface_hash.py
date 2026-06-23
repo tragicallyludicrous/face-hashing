@@ -181,7 +181,8 @@ def arcface_keymix_whitened_v3(embedding, key: str, basis, offset: float = 0.0):
     mu, V, sigma = (np.asarray(b, dtype=np.float64) for b in basis)
     k = V.shape[0]
     nrm = np.linalg.norm(e, axis=-1, keepdims=True)
-    z = ((e - mu) @ V.T) / sigma                         # project + whiten -> ~isotropic (..., k)
+    eu = e / nrm                                         # unit space (basis is unit) -> scale-invariant:
+    z = ((eu - mu) @ V.T) / sigma                        # works on raw (InstantID) or normed embeddings
     perm, signs, rng = _keyed(key, k)
     zt = signs * z[..., perm]                            # permutation preserves an isotropic dist
     if offset:

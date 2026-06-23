@@ -31,9 +31,6 @@ import os
 
 import numpy as np
 
-import mica_local as mica
-import hash_shape                       # reuse its detect+align+MICA-encode (_codedict)
-
 EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
@@ -52,7 +49,20 @@ def main():
     a = ap.parse_args()
 
     import cv2
-    h = mica.load(device=a.device)       # h.app == insightface antelopev2 (detect + recognition)
+    from insightface.app import FaceAnalysis
+
+    # antelope column = antelopev2 RECOGNITION (the embedding InstantID consumes). MICA's h.app is only a
+    # LandmarksDetector, so we run a real FaceAnalysis here, separate from MICA.
+    providers = (["CUDAExecutionProvider", "CPUExecutionProvider"] if a.device == "cuda"
+                 else ["CPUExecutionProvider"])
+    app = FaceAnalysis(name="antelopev2", providers=providers)
+    app.prepare(ctx_id=0 if a.device == "cuda" else -1, det_size=(640, 640))
+
+    h = None
+    if not a.no_mica:                                   # MICA only needed for the mica column
+        import mica_local as mica
+        import hash_shape                               # reuse its detect+align+MICA-encode (_codedict)
+        h = mica.load(device=a.device)
 
     paths = []
     for root, _, files in os.walk(a.in_dir):
@@ -67,14 +77,14 @@ def main():
         img = cv2.imread(p)
         if img is None:
             print(f"  skip (unreadable): {p}"); continue
-        face = _largest_face(h.app.get(img))            # antelopev2 full pipeline
+        face = _largest_face(app.get(img))              # antelopev2 detection + recognition
         if face is None:
             print(f"  skip (no face):    {os.path.basename(p)}"); continue
-        a_emb = np.asarray(face.normed_embedding, np.float32)   # (512,) antelopev2 recognition
+        a_emb = np.asarray(face.normed_embedding, np.float32)   # (512,) antelopev2 recognition (unit)
 
         m_emb = None
-        if not a.no_mica:
-            got = hash_shape._codedict(h, p)            # (codedict, raw 512 MICA arcface)
+        if h is not None:
+            got = hash_shape._codedict(h, p)            # (codedict, 512 MICA arcface)
             if got is None:
                 print(f"  skip (mica no face): {os.path.basename(p)}"); continue
             m_emb = got[1].astype(np.float32)

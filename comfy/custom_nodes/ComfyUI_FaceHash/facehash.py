@@ -103,7 +103,8 @@ def arcface_keymix_whitened_v3(embedding, key: str, basis, offset: float = 0.0):
     mu, V, sigma = (np.asarray(b, dtype=np.float64) for b in basis)
     k = V.shape[0]
     nrm = np.linalg.norm(e, axis=-1, keepdims=True)
-    z = ((e - mu) @ V.T) / sigma
+    eu = e / nrm                                         # scale-invariant: raw or normed input
+    z = ((eu - mu) @ V.T) / sigma
     perm, signs, rng = _keyed(key, k)
     zt = signs * z[..., perm]
     if offset:
